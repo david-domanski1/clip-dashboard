@@ -95,6 +95,21 @@ First launch shows **Setup**:
 
 ![Publish](docs/screenshots/publish.png)
 
+## Streamer clips (no campaign)
+
+The campaign dropdown also offers **Streamer clips (no campaign)**: a workspace for clipping big streamers you
+have no campaign with (Speed, CaseOh, Kai Cenat…). Sources are their channels or video URLs, watched and
+scanned exactly like campaign sources, but:
+
+- Before adding a source you must tick *This creator publicly allows clipping* (a `!clipping` program or
+  clip-friendly terms). Paste a link to their terms and the source card shows it.
+- Clips have no campaign rules (only the 9:16 format and clean-text checks) and no submission tracker.
+- Captions open with a credit line that names the streamer and their handle. The template is editable per
+  source: `{hook} — clip from {creator}'s stream ({handle})`.
+- Clips go through Review and Publish like everything else and can use your connected accounts.
+- If a streamer also has an active campaign in the app, adding them here is blocked and you are pointed to
+  the campaign, so its rules and submissions apply.
+
 ## Connecting accounts
 
 Each account uses one route. The Accounts page shows what every route can and cannot do.

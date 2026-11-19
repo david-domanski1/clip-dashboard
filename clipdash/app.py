@@ -165,7 +165,8 @@ def _campaign_summary(c: dict) -> dict:
         "posted": db.execute("SELECT COUNT(*) c FROM posts WHERE campaign_id=? AND status='live'", (c["id"],)).fetchone()["c"],
     }
     if not c.get("checklist"):
-        c["checklist"] = rules.DEFAULT_CHECKLIST
+        c["checklist"] = db.WORKSPACE_CHECKLIST if db.is_workspace(c) else rules.DEFAULT_CHECKLIST
+    c["workspace"] = db.is_workspace(c)
     return c
 
 
@@ -187,16 +188,32 @@ def create_campaign(body: dict):
 
 @app.put("/api/campaigns/{cid}")
 def update_campaign(cid: int, body: dict):
-    if not db.get("campaigns", cid):
-        _404()
-    db.update("campaigns", cid, {k: v for k, v in body.items() if k in CAMPAIGN_FIELDS})
+    c = db.get("campaigns", cid) or _404()
+    allowed = {"platforms", "checklist", "notes"} if db.is_workspace(c) else CAMPAIGN_FIELDS
+    db.update("campaigns", cid, {k: v for k, v in body.items() if k in allowed})
     return _campaign_summary(db.get("campaigns", cid))
 
 
 @app.delete("/api/campaigns/{cid}")
 def delete_campaign(cid: int):
+    c = db.get("campaigns", cid) or _404()
+    if db.is_workspace(c):
+        _bad("The Streamer clips workspace cannot be deleted; remove its sources instead.")
     db.delete("campaigns", cid)
     return {"ok": True}
+
+
+def _creator_campaign_conflict(cid: int, info: dict, p: dict) -> dict | None:
+    """A creator with an active campaign must be clipped inside that campaign (its rules and submissions apply)."""
+    needles = {str(x).lower().lstrip("@") for x in (info.get("external_id"), info.get("handle"), info.get("name"), p.get("id")) if x}
+    for c in db.rows("campaigns", "active=1 AND kind='campaign' AND id!=?", (cid,)):
+        if c.get("creator") and c["creator"].lower() in needles:
+            return c
+        for src in db.rows("sources", "campaign_id=?", (c["id"],)):
+            ids = {str(x).lower().lstrip("@") for x in (src.get("external_id"), src.get("handle"), src.get("name")) if x}
+            if ids & needles:
+                return c
+    return None
 
 
 @app.post("/api/campaigns/parse")
@@ -247,18 +264,30 @@ def add_source(body: dict):
     except ValueError as e:
         _bad(str(e))
     if p["kind"].endswith("_video"):
-        v = pipeline.add_video(cid, p["url"])
+        if db.is_workspace(db.get("campaigns", cid)) and not body.get("clip_terms_ok"):
+            _bad("Tick “This creator publicly allows clipping” before adding a video to the Streamer clips workspace.")
+        v = pipeline.add_video(cid, p["url"], window=body.get("window"))
         return {"video": v}
+    campaign = db.get("campaigns", cid)
+    workspace = db.is_workspace(campaign)
+    if workspace and not body.get("clip_terms_ok"):
+        _bad("Tick “This creator publicly allows clipping” before adding a source to the Streamer clips workspace.")
     try:
         info = sources.resolve_channel(p["kind"], p["id"])
     except tools.ToolError as e:
         _bad(f"Could not resolve that channel: {str(e)[-300:]}")
+    if workspace:
+        conflict = _creator_campaign_conflict(cid, info, p)
+        if conflict:
+            raise HTTPException(409, {"message": f"{info['name']} has an active campaign here (“{conflict['name']}”). Add the source to that campaign so its rules and submissions apply.", "campaign_id": conflict["id"]})
     existing = db.one("sources", "campaign_id=? AND kind=? AND external_id=?", (cid, p["kind"], info["external_id"]))
     if existing:
         return {"source": existing}
     sid = db.insert("sources", {"campaign_id": cid, "kind": p["kind"], "url": info["url"], "external_id": info["external_id"],
                                 "name": info["name"], "handle": info.get("handle"), "watch": 1 if body.get("watch", True) else 0,
-                                "layout": "full"})
+                                "layout": "full", "clip_terms_ok": 1 if body.get("clip_terms_ok") else 0,
+                                "terms_url": (body.get("terms_url") or "").strip() or None,
+                                "caption_template": (body.get("caption_template") or "").strip() or None})
     if body.get("check_now", True):
         jobs.enqueue("check_sources", {"campaign_id": cid})
     return {"source": db.get("sources", sid)}
@@ -268,7 +297,7 @@ def add_source(body: dict):
 def update_source(sid: int, body: dict):
     if not db.get("sources", sid):
         _404()
-    data = {k: v for k, v in body.items() if k in ("facecam", "layout", "watch", "name")}
+    data = {k: v for k, v in body.items() if k in ("facecam", "layout", "watch", "name", "terms_url", "caption_template", "clip_terms_ok")}
     if "facecam" in data and data["facecam"]:
         fc = data["facecam"]
         if not all(k in fc for k in ("x", "y", "w", "h")) or fc["w"] <= 0.02 or fc["h"] <= 0.02:
@@ -330,8 +359,9 @@ def add_video(body: dict):
     """Add a video and scan it. body.window: 'auto' (default: last 2 hours for VODs over 4 hours), 'last2h', 'last6h',
     'whole', or {'start': seconds, 'end': seconds}. body.override skips the campaign date gate."""
     cid = int(body.get("campaign_id") or 0)
-    if not db.get("campaigns", cid):
-        _404("Campaign not found")
+    campaign = db.get("campaigns", cid) or _404("Campaign not found")
+    if db.is_workspace(campaign) and not body.get("source_id") and not body.get("clip_terms_ok"):
+        _bad("Tick “This creator publicly allows clipping” before scanning a video in the Streamer clips workspace.")
     try:
         return pipeline.add_video(cid, body.get("url") or "", body.get("source_id"), window=body.get("window"),
                                   override=bool(body.get("override")))

@@ -27,9 +27,10 @@ def apply_result(post: dict, res: PublishResult) -> None:
         campaign = db.get("campaigns", post["campaign_id"])
         posted_at = res.posted_at or db.now()
         fields["posted_at"] = posted_at
-        mins = int((campaign or {}).get("submit_minutes") or 30)
-        dl = datetime.fromisoformat(posted_at) + timedelta(minutes=mins)
-        fields["submission_deadline"] = dl.replace(microsecond=0).isoformat()
+        mins = int((campaign or {}).get("submit_minutes") or 0)
+        if mins > 0 and (campaign or {}).get("kind", "campaign") != "streamer":
+            dl = datetime.fromisoformat(posted_at) + timedelta(minutes=mins)
+            fields["submission_deadline"] = dl.replace(microsecond=0).isoformat()
         fields["error"] = None
         clip = db.get("clips", post["clip_id"])
         if clip and clip["status"] in ("approved", "pending"):

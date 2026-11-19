@@ -436,13 +436,15 @@ def render_clip(clip_id: int, progress) -> None:
         seg.unlink(missing_ok=True)
         return  # deleted while rendering
     chat_words = (moment or {}).get("chat_words") or []
-    hook = clip.get("hook") or cap.default_hook(campaign["creator"], words, chat_words)
-    post_text = cap.build_all(campaign, hook, chat_words)
+    creator_name = (source or {}).get("name") if campaign.get("kind") == "streamer" else campaign["creator"]
+    hook = clip.get("hook") or cap.default_hook(creator_name or campaign["creator"], words, chat_words)
+    post_text = cap.build_all(campaign, hook, chat_words, source=source)
     trim_end = min(duration, float(campaign.get("max_len") or duration))
     fields = {
         "path": str(out), "thumb": str(thumb) if thumb else None, "duration": duration, "width": w, "height": h,
         "transcript": words, "hook": hook, "title": post_text.get("youtube", {}).get("title", hook),
-        "hashtags": cap.build_hashtags(campaign, chat_words, "tiktok"), "post_text": post_text,
+        "hashtags": cap.build_hashtags(cap.workspace_campaign(campaign, source) if campaign.get("kind") == "streamer" else campaign, chat_words, "tiktok"),
+        "post_text": post_text,
         "trim_start": 0.0, "trim_end": trim_end, "status": "pending", "watermark": 0, "ai_text": 0,
         "speech_wpm": round(wpm, 1), "flags": flags, "timings": timings,
     }

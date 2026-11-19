@@ -55,7 +55,8 @@ async function loadCampaigns() {
   S.campaigns = await get('/api/campaigns');
   if (!S.campaigns.find((c) => c.id === S.campaignId)) S.campaignId = S.campaigns[0]?.id || null;
   const sel = $('#campaign-select');
-  sel.innerHTML = S.campaigns.map((c) => `<option value="${c.id}" ${c.id === S.campaignId ? 'selected' : ''}>${esc(c.name)}${c.active ? '' : ' (paused)'}</option>`).join('') + `<option value="new">+ New campaign…</option>`;
+  const ordered = [...S.campaigns.filter((c) => !c.workspace), ...S.campaigns.filter((c) => c.workspace)];
+  sel.innerHTML = ordered.map((c) => `<option value="${c.id}" ${c.id === S.campaignId ? 'selected' : ''}>${c.workspace ? '🎬 ' : ''}${esc(c.name)}${c.active || c.workspace ? '' : ' (paused)'}</option>`).join('') + `<option value="new">+ New campaign…</option>`;
 }
 $('#campaign-select').addEventListener('change', (e) => {
   if (e.target.value === 'new') { e.target.value = S.campaignId || ''; openCampaignEditor(); return; }
@@ -84,6 +85,7 @@ async function render() {
   const [view, arg] = hash.split('/');
   S.view = view;
   $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === view));
+  const cw = campaign(); $('#nav a[data-view="submissions"]').classList.toggle('hidden', !!(cw && cw.workspace));
   const fn = VIEWS[view] || VIEWS.home;
   try { await fn($('#main'), arg); } catch (e) { $('#main').innerHTML = `<div class="callout pink">${esc(e.message)}</div>`; }
 }
@@ -120,10 +122,10 @@ VIEWS.home = async (el) => {
     <div class="panel" id="jobs-panel"></div>`;
   $('#camp-cards').innerHTML = S.campaigns.map((c) => `
     <div class="panel" style="cursor:pointer" data-id="${c.id}">
-      <div class="row between"><b>${esc(c.name)}</b> ${c.active ? '<span class="badge ok">active</span>' : '<span class="badge">paused</span>'}</div>
-      <div class="muted small">${esc(c.creator)} · ${(c.platforms || []).join(', ')} · ≥${c.min_len}s · submit within ${c.submit_minutes} min</div>
+      <div class="row between"><b>${esc(c.name)}</b> ${c.workspace ? '<span class="badge teal">no campaign</span>' : (c.active ? '<span class="badge ok">active</span>' : '<span class="badge">paused</span>')}</div>
+      <div class="muted small">${c.workspace ? 'Streamers who publicly allow clipping · no rules, no submissions · ' + (c.platforms || []).join(', ') : esc(c.creator) + ' · ' + (c.platforms || []).join(', ') + ' · ≥' + c.min_len + 's · submit within ' + c.submit_minutes + ' min'}</div>
       <div class="row small" style="margin-top:8px;gap:14px"><span>${c.counts.sources} sources</span><span>${c.counts.videos} videos</span><span>${c.counts.pending} to review</span><span>${c.counts.approved} approved</span><span>${c.counts.posted} live</span></div>
-      <div class="row" style="margin-top:10px"><button class="btn sm" data-edit="${c.id}">Edit rules</button>${c.url ? `<a class="btn sm ghost" href="${esc(c.url)}" target="_blank">Campaign page</a>` : ''}</div>
+      <div class="row" style="margin-top:10px">${c.workspace ? '' : `<button class="btn sm" data-edit="${c.id}">Edit rules</button>`}${c.url ? `<a class="btn sm ghost" href="${esc(c.url)}" target="_blank">Campaign page</a>` : ''}</div>
     </div>`).join('') + `<div class="panel" style="cursor:pointer;border-style:dashed;display:flex;align-items:center;justify-content:center" id="new-camp">+ New campaign</div>`;
   $$('#camp-cards [data-edit]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); openCampaignEditor(S.campaigns.find((x) => x.id === Number(b.dataset.edit))); });
   $$('#camp-cards .panel[data-id]').forEach((p) => p.onclick = () => { S.campaignId = Number(p.dataset.id); localStorage.setItem('campaignId', S.campaignId); loadCampaigns(); location.hash = '#/videos'; });
@@ -215,18 +217,25 @@ VIEWS.sources = async (el) => {
   const [srcs, sugg] = await Promise.all([get(`/api/campaigns/${c.id}/sources`), get('/api/suggestions')]);
   el.innerHTML = `
     <h1>Sources · ${esc(c.name)}</h1><p class="sub">Channels are watched for new GTA VI videos; single videos are scanned once. Only sources attached to a campaign are processed.</p>
+    ${c.workspace ? `<div class="callout teal"><b>Streamer clips (no campaign).</b> Only creators who publicly allow clipping (a !clipping program, clip-friendly terms). Clips here follow no campaign rules and have no submission tracker; captions credit the streamer by name and handle. A creator who has an active campaign in this app must be clipped inside that campaign.</div>` : ''}
     <div class="panel">
       <div class="field"><label>Add a YouTube channel (youtube.com/@name), Twitch channel (twitch.tv/name), or a single video URL</label>
-        <div class="row"><input type="text" id="src-url" placeholder="https://www.youtube.com/@Lacy  ·  https://www.twitch.tv/lacy  ·  https://www.youtube.com/watch?v=…"><button class="btn primary" id="src-add">Add</button></div></div>
+        <div class="row"><input type="text" id="src-url" placeholder="https://www.youtube.com/@IShowSpeed  ·  https://www.twitch.tv/caseoh_  ·  https://www.youtube.com/watch?v=…"><button class="btn primary" id="src-add" ${c.workspace ? 'disabled' : ''}>Add</button></div></div>
+      ${c.workspace ? `<label class="check"><input type="checkbox" id="src-consent"> This creator publicly allows clipping (e.g. a !clipping program or clip-friendly terms)</label>
+        <div class="row" style="margin-top:6px"><input type="text" id="src-terms" placeholder="Link to their clipping terms / program page (optional)" style="flex:1"></div>` : ''}
       <div class="row small muted">Suggestions:</div>
       <div class="chips" style="margin-top:6px">${sugg.map((s) => `${s.youtube ? `<span class="chip" data-url="https://www.youtube.com/${s.youtube}">▶ ${esc(s.name)} (YouTube)</span>` : ''}${s.twitch ? `<span class="chip" data-url="https://www.twitch.tv/${s.twitch}">⌁ ${esc(s.name)} (Twitch)</span>` : ''}`).join('')}</div>
       <div class="small muted" style="margin-top:8px">Channels are resolved by lookup when added (no hardcoded IDs). Many streamers keep edited highlights on one channel and full streams on another or on the channel's Live tab; both tabs are checked.</div>
     </div>
     <div class="grid cols-2" style="margin-top:14px" id="src-list">${srcs.length ? '' : '<div class="empty">No sources yet. Add a channel or paste a video URL.</div>'}</div>`;
+  const consent = () => !c.workspace || ($('#src-consent') && $('#src-consent').checked);
+  if (c.workspace) $('#src-consent').onchange = () => { $('#src-add').disabled = !consent(); };
   const add = async (url) => {
+    if (!consent()) return toast('Tick the clipping-allowed box first', 'warn');
     const btn = $('#src-add'); btn.disabled = true; btn.textContent = 'Resolving…';
-    try { const r = await post('/api/sources', { campaign_id: c.id, url }); toast(r.video ? 'Video queued for scanning' : `Added ${r.source.name}`); if (r.video) location.hash = '#/videos'; else render(); }
-    catch (e) { toastErr(e); } finally { btn.disabled = false; btn.textContent = 'Add'; }
+    try { const r = await post('/api/sources', { campaign_id: c.id, url, clip_terms_ok: consent(), terms_url: c.workspace ? $('#src-terms').value.trim() : undefined }); toast(r.video ? 'Video queued for scanning' : `Added ${r.source.name}`); if (r.video) location.hash = '#/videos'; else render(); }
+    catch (e) { if (e.status === 409 && e.data && e.data.campaign_id) { toast(e.data.message, 'warn'); } else toastErr(e); }
+    finally { btn.disabled = !consent(); btn.textContent = 'Add'; }
   };
   $('#src-add').onclick = () => add($('#src-url').value.trim());
   $('#src-url').onkeydown = (e) => { if (e.key === 'Enter') add(e.target.value.trim()); };
@@ -237,7 +246,8 @@ VIEWS.sources = async (el) => {
     d.innerHTML = `
       <div class="row between"><div><b>${esc(s.name || s.url)}</b> <span class="badge">${s.kind.replace('_', ' ')}</span></div>
         <label class="check small"><input type="checkbox" ${s.watch ? 'checked' : ''} data-watch> watch for new videos</label></div>
-      <div class="small muted"><a href="${esc(s.url)}" target="_blank">${esc(s.url)}</a> · ${s.video_count} videos · last checked ${s.last_checked ? fmtDate(s.last_checked) : 'never'}</div>
+      <div class="small muted"><a href="${esc(s.url)}" target="_blank">${esc(s.url)}</a> · ${s.video_count} videos · last checked ${s.last_checked ? fmtDate(s.last_checked) : 'never'}${s.clip_terms_ok ? ' · <span class="ok-text">clipping allowed ✓</span>' : ''}${s.terms_url ? ` · <a href="${esc(s.terms_url)}" target="_blank">clipping terms ↗</a>` : ''}</div>
+      ${c.workspace ? `<div class="row" style="margin-top:8px"><input type="text" data-terms value="${esc(s.terms_url || '')}" placeholder="Clipping terms URL" style="width:260px"><input type="text" data-template value="${esc(s.caption_template || '')}" placeholder="Caption template: {hook} — clip from {creator}'s stream ({handle})" style="flex:1"><button class="btn sm" data-save-ws>Save</button></div>` : ''}
       <div class="row" style="margin-top:10px">
         <button class="btn sm" data-check>Check for new videos</button>
         <button class="btn sm" data-recent>Browse recent videos</button>
@@ -251,6 +261,7 @@ VIEWS.sources = async (el) => {
     $('[data-check]', d).onclick = () => post(`/api/sources/${s.id}/check`).then(() => toast('Checking in the background')).catch(toastErr);
     $('[data-del]', d).onclick = async () => { if (await confirmDlg(`Remove ${s.name}? Its videos and clips stay.`, 'Remove')) { await del(`/api/sources/${s.id}`); render(); } };
     $('[data-facecam]', d).onclick = () => openFacecamPicker(s);
+    const sv = $('[data-save-ws]', d); if (sv) sv.onclick = () => put(`/api/sources/${s.id}`, { terms_url: $('[data-terms]', d).value.trim(), caption_template: $('[data-template]', d).value.trim() }).then(() => toast('Saved; applies to clips rendered from now on')).catch(toastErr);
     $('[data-recent]', d).onclick = async () => {
       const x = $('[data-extra]', d); x.innerHTML = '<div class="muted small">Loading…</div>';
       try {
@@ -330,7 +341,7 @@ VIEWS.videos = async (el, arg) => {
       <div class="small muted" style="margin-top:6px">Videos published before the campaign's footage start (${esc((c.source_start || 'not set').slice(0, 10))}) are skipped unless you override.</div></div>
     <div class="panel" id="v-list" style="margin-top:14px">${vids.length ? '' : '<div class="empty">No videos yet. Paste a URL above or add a source.</div>'}</div>`;
   wireWindow(el, 'new');
-  const add = async () => { const w = readWindow(el, 'new'); if (w === null) return; try { await post('/api/videos', { campaign_id: c.id, url: $('#v-url').value.trim(), window: w }); $('#v-url').value = ''; toast('Queued for scanning'); render(); } catch (e) { toastErr(e); } };
+  const add = async () => { const w = readWindow(el, 'new'); if (w === null) return; const ok = !c.workspace || confirm('Does this creator publicly allow clipping (a !clipping program or clip-friendly terms)? Only continue if yes.'); if (!ok) return; try { await post('/api/videos', { campaign_id: c.id, url: $('#v-url').value.trim(), window: w, clip_terms_ok: ok }); $('#v-url').value = ''; toast('Queued for scanning'); render(); } catch (e) { toastErr(e); } };
   $('#v-add').onclick = add; $('#v-url').onkeydown = (e) => { if (e.key === 'Enter') add(); };
   const list = $('#v-list');
   for (const v of vids) {
@@ -396,7 +407,7 @@ VIEWS.review = async (el, arg) => {
   const filter = S.reviewFilter || 'pending';
   const clips = await get(`/api/clips?campaign_id=${c.id}${filter === 'all' ? '' : '&status=' + filter}${arg ? '&video_id=' + arg : ''}`);
   el.innerHTML = `
-    <div class="row between"><div><h1>Review · ${esc(c.name)}</h1><p class="sub">Watch every clip. Trim it to open on something worth watching, fix the hook, tick the checklist, then approve or reject. Clips that fail a campaign rule can't be approved.</p></div>
+    <div class="row between"><div><h1>Review · ${esc(c.name)}</h1><p class="sub">${c.workspace ? 'No campaign rules here: only the 9:16 format check and clean text apply. Captions credit the streamer; edit the template per source.' : "Watch every clip. Trim it to open on something worth watching, fix the hook, tick the checklist, then approve or reject. Clips that fail a campaign rule can't be approved."}</p></div>
       <div class="chips">${[['pending', 'To review'], ['approved', 'Approved'], ['rejected', 'Rejected'], ['posted', 'Posted'], ['rendering,error', 'Rendering / failed'], ['all', 'All']].map(([k, l]) => `<span class="chip ${filter === k ? 'on' : ''}" data-f="${k}">${l}</span>`).join('')}</div></div>
     <div class="clip-grid" id="clip-grid">${clips.length ? '' : '<div class="empty" style="grid-column:1/-1">Nothing here. Clips appear once a video has been scanned and rendered.</div>'}</div>`;
   $$('.chip[data-f]').forEach((ch) => ch.onclick = () => { S.reviewFilter = ch.dataset.f; render(); });
@@ -599,6 +610,7 @@ function optField(aid, o) {
 VIEWS.submissions = async (el) => {
   const c = campaign();
   if (!c) { el.innerHTML = noCampaign(); return; }
+  if (c.workspace) { el.innerHTML = `<h1>Submissions</h1><p class="sub">The Streamer clips workspace has no campaign, so there is nothing to submit. Pick a campaign in the sidebar.</p>`; return; }
   const posts = (await get(`/api/posts?campaign_id=${c.id}&status=live`)).sort((a, b) => (a.submitted_at ? 1 : 0) - (b.submitted_at ? 1 : 0) || (a.submission_deadline || '').localeCompare(b.submission_deadline || ''));
   el.innerHTML = `<h1>Submissions · ${esc(c.name)}</h1><p class="sub">Every live post must be submitted to the campaign within ${c.submit_minutes} minutes. Copy the link, open the submission page, paste, then tick Submitted. Never edit or delete a submitted post.</p>
     ${c.submission_url ? '' : '<div class="callout pink">This campaign has no submission page URL yet. Add it in the campaign rules.</div>'}

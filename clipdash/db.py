@@ -116,7 +116,12 @@ def conn() -> sqlite3.Connection:
     return c
 
 
+WORKSPACE_NAME = "Streamer clips (no campaign)"
+WORKSPACE_CHECKLIST = ["Credits the streamer and respects their clipping terms"]
+
 MIGRATIONS = {
+    "campaigns": [("kind", "TEXT NOT NULL DEFAULT 'campaign'")],
+    "sources": [("clip_terms_ok", "INTEGER NOT NULL DEFAULT 0"), ("terms_url", "TEXT"), ("caption_template", "TEXT")],
     "moments": [("thumb", "TEXT"), ("flags", "TEXT NOT NULL DEFAULT '[]'"), ("raw_score", "REAL"), ("speech", "REAL")],
     "clips": [("speech_wpm", "REAL"), ("flags", "TEXT NOT NULL DEFAULT '[]'"), ("timings", "TEXT NOT NULL DEFAULT '{}'")],
     "videos": [("scan_start", "REAL"), ("scan_end", "REAL"), ("scanned_ranges", "TEXT NOT NULL DEFAULT '[]'"),
@@ -133,6 +138,24 @@ def init() -> None:
         for name, decl in cols:
             if name not in have:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    ensure_workspace()
+
+
+def ensure_workspace() -> dict:
+    """The campaign-less workspace for clipping streamers who publicly allow it. Modelled as a campaign row with
+    kind='streamer' so sources, videos, clips and posts keep one data model; it has no rules and no submissions."""
+    row = one("campaigns", "kind='streamer'")
+    if row:
+        return row
+    cid = insert("campaigns", {"name": WORKSPACE_NAME, "creator": "Streamer", "kind": "streamer", "required_names": [],
+                               "required_hashtags": [], "min_len": 0, "max_len": 0, "platforms": ["youtube", "tiktok", "instagram", "x"],
+                               "watermark_allowed": 0, "submit_minutes": 0, "pay_model": "none", "checklist": WORKSPACE_CHECKLIST,
+                               "notes": "Clips of streamers you have no campaign with. Only add creators who publicly allow clipping."})
+    return get("campaigns", cid)
+
+
+def is_workspace(campaign: dict | None) -> bool:
+    return bool(campaign) and campaign.get("kind") == "streamer"
 
 
 def _decode(table: str, row: sqlite3.Row | None) -> dict | None:

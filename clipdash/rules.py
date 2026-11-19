@@ -33,6 +33,8 @@ def validate_clip(clip: dict, campaign: dict, video: dict | None, platforms: lis
     res: list[dict] = []
     dur = clip.get("duration")
     mn, mx = campaign.get("min_len") or 0, campaign.get("max_len") or 0
+    if campaign.get("kind") == "streamer":
+        mn, mx = 0, 0
     if dur is None:
         res.append({"rule": "length", "ok": False, "detail": "Clip has not been rendered yet"})
     else:
@@ -46,8 +48,9 @@ def validate_clip(clip: dict, campaign: dict, video: dict | None, platforms: lis
     else:
         res.append({"rule": "format", "ok": False, "detail": "Resolution unknown (not rendered)"})
 
-    names = campaign.get("required_names") or [campaign.get("creator")]
-    tags = campaign.get("required_hashtags") or []
+    workspace = campaign.get("kind") == "streamer"
+    names = [] if workspace else (campaign.get("required_names") or [campaign.get("creator")])
+    tags = [] if workspace else (campaign.get("required_hashtags") or [])
     post_text = clip.get("post_text") or {}
     check_platforms = platforms or [p for p in (campaign.get("platforms") or []) if p in post_text] or list(post_text)
     for p in check_platforms:
@@ -65,7 +68,7 @@ def validate_clip(clip: dict, campaign: dict, video: dict | None, platforms: lis
             res.append({"rule": "clean_text", "platform": p, "ok": False, "detail": f"{p}: post text contains profanity"})
 
     start, end = _parse_dt(campaign.get("source_start")), _parse_dt(campaign.get("source_end"))
-    if video and (start or end):
+    if video and (start or end) and not workspace:
         pub = _parse_dt(video.get("published_at"))
         if pub is None:
             res.append({"rule": "source_date", "ok": False, "detail": "Source publish date unknown"})
@@ -73,7 +76,7 @@ def validate_clip(clip: dict, campaign: dict, video: dict | None, platforms: lis
             ok = (not start or pub >= start) and (not end or pub <= end)
             res.append({"rule": "source_date", "ok": ok,
                         "detail": f"Source published {pub.date()}" + ("" if ok else f", campaign window starts {start.date() if start else '…'}")})
-    if not campaign.get("watermark_allowed", 0):
+    if not campaign.get("watermark_allowed", 0) and not workspace:
         res.append({"rule": "no_watermark", "ok": not clip.get("watermark"),
                     "detail": "No logo or watermark added" if not clip.get("watermark") else "A watermark was added; the campaign forbids logos"})
     res.append({"rule": "no_ai_text", "ok": not clip.get("ai_text"),
@@ -97,6 +100,8 @@ def platform_allowed(campaign: dict, platform: str) -> bool:
 
 def checklist_complete(campaign: dict, ticks: dict) -> bool:
     items = campaign.get("checklist") or DEFAULT_CHECKLIST
+    if campaign.get("kind") == "streamer" and not campaign.get("checklist"):
+        items = ["Credits the streamer and respects their clipping terms"]
     return all(ticks.get(str(i)) for i in range(len(items)))
 
 

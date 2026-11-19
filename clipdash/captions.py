@@ -18,6 +18,20 @@ PLATFORM_LIMITS = {
     "x": {"title": 0, "text": 280, "tags": 3},
 }
 GAME_TAGS = ["#gta6", "#gtavi", "#vicecity"]
+DEFAULT_CREDIT_TEMPLATE = "{hook} — clip from {creator}'s stream ({handle})"
+
+
+def credit_line(template: str | None, creator: str, handle: str | None, hook: str) -> str:
+    """Caption opener for streamer-workspace clips: credits the streamer by name and handle. Editable per source."""
+    t = (template or DEFAULT_CREDIT_TEMPLATE)
+    h = handle or ""
+    if h and not h.startswith("@"):
+        h = "@" + h
+    try:
+        out = t.format(creator=creator, handle=h, hook=hook.strip())
+    except (KeyError, IndexError, ValueError):
+        out = DEFAULT_CREDIT_TEMPLATE.format(creator=creator, handle=h, hook=hook.strip())
+    return re.sub(r"\(\s*\)", "", out).replace("  ", " ").strip()
 
 
 def has_profanity(text: str) -> bool:
@@ -153,7 +167,10 @@ def build_post_text(platform: str, campaign: dict, hook: str, hashtags: list[str
     """Returns {'title': ..., 'text': ...} for the platform."""
     creator = campaign.get("creator", "")
     names = campaign.get("required_names") or []
-    hook = mention_creator(hook.strip(), creator, names)
+    if campaign.get("kind") == "streamer":
+        hook = credit_line(campaign.get("caption_template"), creator, campaign.get("handle"), hook)
+    else:
+        hook = mention_creator(hook.strip(), creator, names)
     lim = PLATFORM_LIMITS.get(platform, PLATFORM_LIMITS["tiktok"])
     tagline = " ".join(hashtags)
     if platform == "youtube":
@@ -168,7 +185,18 @@ def build_post_text(platform: str, campaign: dict, hook: str, hashtags: list[str
     return {"title": "", "text": text}
 
 
-def build_all(campaign: dict, hook: str, chat_words: list[str], platforms: list[str] | None = None) -> dict:
+def workspace_campaign(campaign: dict, source: dict | None) -> dict:
+    """For streamer-workspace clips the 'creator' is the source channel; no required names or tags."""
+    c = dict(campaign)
+    c.update({"creator": (source or {}).get("name") or c.get("creator") or "the streamer",
+              "handle": (source or {}).get("handle") or "", "caption_template": (source or {}).get("caption_template"),
+              "required_names": [], "required_hashtags": []})
+    return c
+
+
+def build_all(campaign: dict, hook: str, chat_words: list[str], platforms: list[str] | None = None, source: dict | None = None) -> dict:
+    if campaign.get("kind") == "streamer":
+        campaign = workspace_campaign(campaign, source)
     out = {}
     for p in platforms or campaign.get("platforms") or ["youtube", "tiktok", "instagram"]:
         tags = build_hashtags(campaign, chat_words, p)
