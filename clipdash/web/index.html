@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clip Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231a0b3a'/%3E%3Crect x='11' y='5' width='10' height='22' rx='2' fill='%231fd1d6'/%3E%3Crect x='13' y='18' width='6' height='6' rx='1' fill='%23ff4f9a'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand"><span class="logo"></span><div><b>Clip Dashboard</b><small id="brand-sub">loading…</small></div></div>
+    <div class="campaign-pick">
+      <label>Campaign</label>
+      <select id="campaign-select"></select>
+    </div>
+    <nav id="nav">
+      <a href="#/" data-view="home"><i>◈</i>Overview</a>
+      <a href="#/sources" data-view="sources"><i>⌁</i>Sources</a>
+      <a href="#/videos" data-view="videos"><i>▶</i>Pipeline <b class="pill" id="pill-videos"></b></a>
+      <a href="#/review" data-view="review"><i>✓</i>Review <b class="pill" id="pill-review"></b></a>
+      <a href="#/publish" data-view="publish"><i>↗</i>Publish <b class="pill" id="pill-publish"></b></a>
+      <a href="#/submissions" data-view="submissions"><i>⏱</i>Submissions <b class="pill hot" id="pill-subs"></b></a>
+      <a href="#/stats" data-view="stats"><i>▮</i>Stats</a>
+      <div class="nav-sep"></div>
+      <a href="#/accounts" data-view="accounts"><i>◉</i>Accounts</a>
+      <a href="#/setup" data-view="setup"><i>⚙</i>Setup</a>
+      <a href="#/settings" data-view="settings"><i>≡</i>Settings</a>
+    </nav>
+    <div id="side-status">
+      <div id="jobs-mini"></div>
+      <div id="disk-mini"></div>
+      <div id="dry-run-flag" class="hidden">DRY RUN: nothing is posted</div>
+    </div>
+  </aside>
+  <main id="main"></main>
+</div>
+<div id="modal-root"></div>
+<div id="toasts"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,190 @@
+"""Cutting: download only the needed segment, transcribe with Whisper, burn word-timed captions,
+lay out 9:16 (facecam on top, gameplay below), trim, thumbnails and frame extraction."""
+from __future__ import annotations
+
+import os
+import re
+import tempfile
+from pathlib import Path
+from typing import Callable
+
+import numpy as np
+
+from . import captions as cap
+from . import tools
+
+
+def fmt_ts(sec: float) -> str:
+    sec = int(sec)
+    return f"{sec // 3600:02d}:{(sec % 3600) // 60:02d}:{sec % 60:02d}"
+
+
+def download_segment(url: str, platform: str, start: float, length: float, out: Path,
+                     on_line: Callable[[str], None] | None = None) -> Path:
+    """Fetch only [start, start+length] at up to 1080p. Never the whole VOD."""
+    if out.exists() and out.stat().st_size > 0:
+        return out
+    fmt = ("1080p60/1080p/best" if platform == "twitch"
+           else "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best")
+    tmp = out.with_suffix(".part.mp4")
+    tools.run(["yt-dlp", "-f", fmt, "--download-sections", f"*{fmt_ts(start)}-{fmt_ts(start + length)}",
+               "--force-keyframes-at-cuts", "--merge-output-format", "mp4", "--newline", "--progress",
+               "-o", str(tmp), url], timeout=3600, on_line=on_line)
+    if not tmp.exists():
+        cands = list(out.parent.glob(tmp.stem + "*"))
+        if not cands:
+            raise tools.ToolError("yt-dlp produced no file")
+        cands[0].rename(tmp)
+    tmp.rename(out)
+    return out
+
+
+def decode_audio(path: Path, sample_rate: int = 16000, dtype: str = "f32le") -> np.ndarray:
+    """Decode with ffmpeg to mono PCM. faster-whisper crashes with current PyAV when given a path,
+    so it always receives an array."""
+    with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as tmp:
+        raw = tmp.name
+    try:
+        tools.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), "-vn", "-ac", "1",
+                   "-ar", str(sample_rate), "-f", dtype, raw], timeout=3600)
+        return np.fromfile(raw, dtype=np.float32 if dtype == "f32le" else np.int16)
+    finally:
+        try:
+            os.unlink(raw)
+        except OSError:
+            pass
+
+
+_model_cache: dict = {}
+
+
+def transcribe(path: Path, model_name: str = "small") -> list[list]:
+    """Word-timed transcript: [[start, end, word], ...]."""
+    from faster_whisper import WhisperModel
+    audio = decode_audio(path)
+    model = _model_cache.get(model_name)
+    if model is None:
+        model = WhisperModel(model_name, device="auto", compute_type="int8")
+        _model_cache[model_name] = model
+    segs, _info = model.transcribe(audio, language="en", vad_filter=True, word_timestamps=True)
+    words: list[list] = []
+    for s in segs:
+        for w in (s.words or []):
+            if w.word.strip():
+                words.append([round(float(w.start), 2), round(float(w.end), 2), w.word.strip()])
+    return words
+
+
+def group_captions(words: list, max_words: int = 4, max_dur: float = 2.0) -> list[tuple]:
+    lines, cur = [], []
+    for w in words:
+        cur.append(w)
+        if len(cur) >= max_words or (cur[-1][1] - cur[0][0]) >= max_dur:
+            lines.append(cur)
+            cur = []
+    if cur:
+        lines.append(cur)
+    return [(l[0][0], l[-1][1], " ".join(w[2] for w in l)) for l in lines]
+
+
+def ass_time(t: float) -> str:
+    t = max(0.0, t)
+    h = int(t // 3600)
+    m = int(t % 3600 // 60)
+    s = t % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+
+def write_ass(lines: list[tuple], creator: str, out: Path, w: int = 1080, h: int = 1920,
+              censor: bool = False, offset: float = 0.0, name_badge: bool = True) -> Path:
+    """Big outlined captions in the lower-middle of the frame plus the creator's name near the top.
+    The name badge is plain text (no logo) so it does not count as a watermark."""
+    def esc(s: str) -> str:
+        s = cap.censor(s) if censor else s
+        return s.replace("{", "(").replace("}", ")").replace("\\", "/").upper()
+    hdr = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {w}
+PlayResY: {h}
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Cap,Arial,78,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6,2,2,60,60,520,1
+Style: Name,Arial,60,&H0066E0FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,2,0,1,5,2,8,60,60,160,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    ev = []
+    if name_badge and creator:
+        ev.append(f"Dialogue: 0,0:00:00.00,9:59:59.00,Name,,0,0,0,,{esc(creator)}")
+    for s, e, text in lines:
+        if e - offset <= 0:
+            continue
+        ev.append(f"Dialogue: 0,{ass_time(s - offset)},{ass_time(e - offset)},Cap,,0,0,0,,{esc(text)}")
+    out.write_text(hdr + "\n".join(ev) + "\n", encoding="utf-8")
+    return out
+
+
+def _ass_filter_path(p: Path) -> str:
+    """Escape a path for the ass= filter option. Windows drive colons and backslashes must be escaped."""
+    s = str(p).replace("\\", "/")
+    s = s.replace(":", "\\:").replace("'", "\\'")
+    return s
+
+
+def build_filter(facecam: dict | None, layout: str, ass_path: Path | None, W: int = 1080, H: int = 1920,
+                 cam_fraction: float = 0.32) -> str:
+    """facecam: {x, y, w, h} as fractions of the source frame. layout: 'stacked' or 'full'."""
+    if layout == "stacked" and facecam:
+        cam_h = int(H * cam_fraction)
+        game_h = H - cam_h
+        fx, fy, fw, fh = (max(0.0, min(1.0, float(facecam[k]))) for k in ("x", "y", "w", "h"))
+        f = (
+            f"[0:v]split=2[cam][game];"
+            f"[cam]crop=iw*{fw:.4f}:ih*{fh:.4f}:iw*{fx:.4f}:ih*{fy:.4f},"
+            f"scale={W}:{cam_h}:force_original_aspect_ratio=increase,crop={W}:{cam_h}[camv];"
+            f"[game]scale=-2:{game_h},crop={W}:{game_h}[gamev];"
+            f"[camv][gamev]vstack=inputs=2[v0];[v0]format=yuv420p"
+        )
+    else:
+        # Gameplay fills the width; a blurred copy fills the rest of the 9:16 frame.
+        f = (
+            f"[0:v]split=2[bg][fg];"
+            f"[bg]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},boxblur=30:5[bgv];"
+            f"[fg]scale={W}:-2[fgv];"
+            f"[bgv][fgv]overlay=(W-w)/2:(H-h)/2[v0];[v0]format=yuv420p"
+        )
+    if ass_path:
+        f += f",ass='{_ass_filter_path(ass_path)}'"
+    return f + "[vout]"
+
+
+def render(src: Path, out: Path, facecam: dict | None, layout: str, ass_path: Path | None,
+           cam_fraction: float = 0.32, on_line: Callable[[str], None] | None = None) -> Path:
+    tools.run(["ffmpeg", "-y", "-loglevel", "error", "-stats", "-i", str(src),
+               "-filter_complex", build_filter(facecam, layout, ass_path, cam_fraction=cam_fraction),
+               "-map", "[vout]", "-map", "0:a?", "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+               "-r", "60", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+               "-movflags", "+faststart", str(out)], timeout=7200, on_line=on_line)
+    return out
+
+
+def trim(src: Path, out: Path, start: float, end: float) -> Path:
+    """Re-encode [start, end] of a rendered clip (captions already burned in) for a frame-accurate cut."""
+    tools.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(src),
+               "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-c:a", "aac", "-b:a", "192k",
+               "-movflags", "+faststart", str(out)], timeout=3600)
+    return out
+
+
+def extract_frame(src: Path, t: float, out: Path, width: int | None = None) -> Path:
+    vf = f"scale={width}:-2" if width else "scale=iw:ih"
+    tools.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(src),
+               "-frames:v", "1", "-vf", vf, "-q:v", "3", str(out)], timeout=600)
+    return out
+
+
+def ass_text_sanity(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()

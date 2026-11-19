@@ -1,0 +1,26 @@
+# Virtual environment and Python caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# All local state: database, downloaded tools, cache, rendered clips, secrets.
+# Nothing in here should ever be committed.
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Secrets (belt and braces: data/ is already ignored)
+.env
+secrets/
+*.token.json
+client_secret*.json
+token*.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

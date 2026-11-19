@@ -1,0 +1,10 @@
+# Runtime dependencies for Clip Dashboard. Install with install.command / install.bat.
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+yt-dlp>=2025.10.0
+faster-whisper>=1.1,<2
+numpy>=1.26
+imageio-ffmpeg>=0.6
+requests>=2.31
+google-api-python-client>=2.150
+google-auth-oauthlib>=1.2
