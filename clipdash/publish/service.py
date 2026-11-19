@@ -178,8 +178,11 @@ class ServiceYouTube(ServiceBase):
                  "choices": [["public", "Public"], ["unlisted", "Unlisted"], ["private", "Private"]]}]
 
     def _platform_data(self, post: dict, options: dict) -> dict:
-        return {"title": (post.get("title") or "")[:100], "visibility": options.get("visibility", "public"),
-                "categoryId": "20", "madeForKids": False}
+        d = {"title": (post.get("title") or "")[:100], "visibility": options.get("visibility", "public"),
+             "categoryId": "20", "madeForKids": False}
+        if options.get("synthetic"):
+            d["containsSyntheticMedia"] = True   # field name not confirmed in the service's docs; set it in YouTube Studio if it is ignored
+        return d
 
 
 class ServiceTikTok(ServiceBase):
@@ -196,9 +199,12 @@ class ServiceTikTok(ServiceBase):
     def _root_extra(self, options: dict) -> dict:
         if not options.get("privacy_level"):
             raise RuntimeError("Pick a TikTok privacy level.")
-        return {"tiktokSettings": {"privacy_level": options["privacy_level"], "allow_comment": bool(options.get("allow_comment")),
-                                   "allow_duet": bool(options.get("allow_duet")), "allow_stitch": bool(options.get("allow_stitch")),
-                                   "content_preview_confirmed": True, "express_consent_given": True}}
+        settings = {"privacy_level": options["privacy_level"], "allow_comment": bool(options.get("allow_comment")),
+                    "allow_duet": bool(options.get("allow_duet")), "allow_stitch": bool(options.get("allow_stitch")),
+                    "content_preview_confirmed": True, "express_consent_given": True}
+        if options.get("synthetic"):
+            settings["is_aigc"] = True   # field name not confirmed in the service's docs; label the post in the TikTok app if ignored
+        return {"tiktokSettings": settings}
 
 
 class ServiceInstagram(ServiceBase):

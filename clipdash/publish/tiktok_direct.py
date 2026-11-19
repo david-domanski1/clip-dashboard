@@ -144,6 +144,18 @@ class TikTokDirect(Publisher):
             {"key": "_nick", "type": "note", "label": f"Posting as {meta.get('nickname') or self.account.get('handle') or 'this account'}. It can take a few minutes for a post to appear on your profile."},
         ]
 
+    @staticmethod
+    def build_post_info(post: dict, options: dict, privacy: str) -> dict:
+        return {
+            "title": (post.get("post_text") or "")[:2200], "privacy_level": privacy,
+            "disable_comment": not options.get("allow_comment", False),
+            "disable_duet": not options.get("allow_duet", False),
+            "disable_stitch": not options.get("allow_stitch", False),
+            "brand_content_toggle": bool(options.get("branded_content")),
+            "brand_organic_toggle": bool(options.get("brand_organic")),
+            "is_aigc": bool(options.get("synthetic")),   # "AI-generated content" label
+        }
+
     def _upload(self, init_path: str, body: dict, clip_path: str) -> str:
         size = Path(clip_path).stat().st_size
         chunk = size if size < 64 * 1024 * 1024 else 10 * 1024 * 1024
@@ -183,15 +195,7 @@ class TikTokDirect(Publisher):
             raise RuntimeError("Pick a TikTok privacy level from the options TikTok returned for this account.")
         if options.get("commercial") and not (options.get("brand_organic") or options.get("branded_content")):
             raise RuntimeError("Commercial content is on: choose Your brand, Branded content, or both.")
-        body = {"post_info": {
-            "title": (post.get("post_text") or "")[:2200], "privacy_level": privacy,
-            "disable_comment": not options.get("allow_comment", False),
-            "disable_duet": not options.get("allow_duet", False),
-            "disable_stitch": not options.get("allow_stitch", False),
-            "brand_content_toggle": bool(options.get("branded_content")),
-            "brand_organic_toggle": bool(options.get("brand_organic")),
-            "is_aigc": False,
-        }}
+        body = {"post_info": self.build_post_info(post, options, privacy)}
         if max_dur and post.get("duration") and post["duration"] > max_dur:
             raise RuntimeError(f"This TikTok account can post at most {max_dur}s videos.")
         pid = self._upload("/post/publish/video/init/", body, clip_path)

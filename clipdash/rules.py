@@ -79,10 +79,25 @@ def validate_clip(clip: dict, campaign: dict, video: dict | None, platforms: lis
     if not campaign.get("watermark_allowed", 0) and not workspace:
         res.append({"rule": "no_watermark", "ok": not clip.get("watermark"),
                     "detail": "No logo or watermark added" if not clip.get("watermark") else "A watermark was added; the campaign forbids logos"})
-    res.append({"rule": "no_ai_text", "ok": not clip.get("ai_text"),
-                "detail": "Captions and hook come from the real transcript" if not clip.get("ai_text")
-                else "Model-written text is in use; review it"})
+    narr = clip.get("narration") or {}
+    if narr.get("enabled"):
+        ok, why = narration_allowed(campaign)
+        res.append({"rule": "ai_voice", "ok": ok, "detail": ("AI voice intro: posts will carry the altered/synthetic content disclosure" if ok else why)})
+        res.append({"rule": "no_ai_text", "ok": ok, "detail": "Model-written hook is narrated (you reviewed it)" if ok else "Model-written text is in use but AI content is not allowed here"})
+    else:
+        res.append({"rule": "no_ai_text", "ok": not clip.get("ai_text"),
+                    "detail": "Captions and hook come from the real transcript" if not clip.get("ai_text")
+                    else "Model-written text is in use; review it"})
     return res
+
+
+def narration_allowed(campaign: dict) -> tuple[bool, str]:
+    """AI narration is off by default, locked off when the campaign bans AI content, always available in the workspace."""
+    if campaign.get("bans_ai"):
+        return False, "This campaign's rules ban AI-generated content, so narration is locked off."
+    if campaign.get("kind") == "streamer" or campaign.get("ai_narration"):
+        return True, "AI narration allowed"
+    return False, "AI narration is off for this campaign (enable it in the campaign rules if the campaign permits AI content)."
 
 
 def has_profanity_text(text: str) -> bool:
@@ -147,6 +162,9 @@ def parse_rules_text(text: str) -> dict:
             pass
     if re.search(r"no\s+(logos?|watermarks?)", t, re.I):
         out["watermark_allowed"] = 0
+    if re.search(r"\bno\s+ai\b|ai[- ]generated|artificial intelligence|\bai content\b", t, re.I):
+        out["bans_ai"] = 1
+        out["ai_narration"] = 0
     if m := re.search(r"(?:at least|minimum|min)\s*(\d{2,3})\s*(?:seconds|secs|s)\b", t, re.I):
         out["min_len"] = int(m.group(1))
     return out

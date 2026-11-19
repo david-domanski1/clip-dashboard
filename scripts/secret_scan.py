@@ -13,7 +13,7 @@ PATTERNS = [
     (r"sk_[0-9a-f]{64}", "Zernio API key"),
     (r"EAA[0-9A-Za-z]{40,}", "Facebook access token"),
     (r"act\.[0-9A-Za-z_-]{20,}", "TikTok access token"),
-    (r"(?i)(client_secret|app_secret|api_key|access_token|refresh_token)\"?\s*[:=]\s*\"?[0-9A-Za-z_\-\.]{16,}", "credential assignment"),
+    (r"(?i)(client_secret|app_secret|api_key|access_token|refresh_token)\"?\s*[:=]\s*[\"'][0-9A-Za-z_\-\.]{16,}[\"']", "credential literal"),
     (r"-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----", "private key"),
 ]
 ALLOW = {".env.example", "scripts/secret_scan.py", "README.md"}

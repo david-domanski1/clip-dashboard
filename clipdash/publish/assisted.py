@@ -25,6 +25,8 @@ class Assisted(Publisher):
         text = post.get("post_text") or ""
         if post.get("title"):
             text = f"{post['title']}\n\n{text}"
+        if options.get("synthetic"):
+            text += "\n\n[Reminder: this clip has an AI voice intro. Turn on the platform's 'altered or synthetic content' / AI-generated label when uploading.]"
         (OUTBOX / (dst.stem + ".txt")).write_text(text + "\n", encoding="utf-8")
         return PublishResult(status="manual", detail=f"Ready in outbox: {name}. Upload it on {self.platform}, then paste the link.",
                              extra={"outbox_file": str(dst), "upload_page": self.upload_page()})

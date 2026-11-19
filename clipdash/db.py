@@ -92,7 +92,7 @@ JSON_COLS = {
     "sources": {"facecam"},
     "videos": {"signals", "scanned_ranges", "scan_window"},
     "moments": {"reasons", "chat_words", "flags"},
-    "clips": {"transcript", "hashtags", "post_text", "checklist", "rule_results", "flags", "timings"},
+    "clips": {"transcript", "hashtags", "post_text", "checklist", "rule_results", "flags", "timings", "narration"},
     "accounts": {"meta", "campaign_ids"},
     "posts": {"options", "log"},
     "jobs": {"payload"},
@@ -120,10 +120,10 @@ WORKSPACE_NAME = "Streamer clips (no campaign)"
 WORKSPACE_CHECKLIST = ["Credits the streamer and respects their clipping terms"]
 
 MIGRATIONS = {
-    "campaigns": [("kind", "TEXT NOT NULL DEFAULT 'campaign'")],
+    "campaigns": [("kind", "TEXT NOT NULL DEFAULT 'campaign'"), ("ai_narration", "INTEGER NOT NULL DEFAULT 0"), ("bans_ai", "INTEGER NOT NULL DEFAULT 0")],
     "sources": [("clip_terms_ok", "INTEGER NOT NULL DEFAULT 0"), ("terms_url", "TEXT"), ("caption_template", "TEXT")],
     "moments": [("thumb", "TEXT"), ("flags", "TEXT NOT NULL DEFAULT '[]'"), ("raw_score", "REAL"), ("speech", "REAL")],
-    "clips": [("speech_wpm", "REAL"), ("flags", "TEXT NOT NULL DEFAULT '[]'"), ("timings", "TEXT NOT NULL DEFAULT '{}'")],
+    "clips": [("speech_wpm", "REAL"), ("flags", "TEXT NOT NULL DEFAULT '[]'"), ("timings", "TEXT NOT NULL DEFAULT '{}'"), ("narration", "TEXT NOT NULL DEFAULT '{}'")],
     "videos": [("scan_start", "REAL"), ("scan_end", "REAL"), ("scanned_ranges", "TEXT NOT NULL DEFAULT '[]'"),
                ("override", "INTEGER NOT NULL DEFAULT 0"), ("live", "INTEGER NOT NULL DEFAULT 0"),
                ("scan_window", "TEXT NOT NULL DEFAULT '{}'")],

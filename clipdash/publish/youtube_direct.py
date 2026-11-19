@@ -83,7 +83,8 @@ class YouTubeDirect(Publisher):
         return [{"key": "privacy", "label": "Visibility", "type": "select", "default": "public",
                  "choices": [["public", "Public"], ["unlisted", "Unlisted"], ["private", "Private"]]}]
 
-    def publish(self, clip_path: str, post: dict, options: dict) -> PublishResult:
+    @staticmethod
+    def build_body(post: dict, options: dict) -> dict:
         scheduled = post.get("scheduled_at")
         privacy = options.get("privacy", "public")
         body = {
@@ -92,9 +93,17 @@ class YouTubeDirect(Publisher):
                         "tags": [t.lstrip("#") for t in (options.get("tags") or [])][:20]},
             "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False},
         }
+        if options.get("synthetic"):
+            body["status"]["containsSyntheticMedia"] = True   # "altered or synthetic content" disclosure
         if scheduled:
             body["status"]["privacyStatus"] = "private"
             body["status"]["publishAt"] = _rfc3339(scheduled)
+        return body
+
+    def publish(self, clip_path: str, post: dict, options: dict) -> PublishResult:
+        scheduled = post.get("scheduled_at")
+        privacy = options.get("privacy", "public")
+        body = self.build_body(post, options)
         if is_dry_run():
             vid = f"dry{post['id']:08d}"
             return PublishResult(status="scheduled" if scheduled else "live", url=f"https://youtube.com/shorts/{vid}",

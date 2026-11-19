@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import captions as cap
-from . import chat, config, cut, db, disk, rules, signals, sources, speech, thumbs, tools
+from . import chat, config, cut, db, disk, narration, rules, signals, sources, speech, thumbs, tools, tts
 
 CHUNK_S = 2 * 3600          # "Scan the rest" works in 2-hour chunks
 LONG_VOD_S = 4 * 3600       # VODs longer than this default to the last 2 hours
@@ -470,23 +470,70 @@ def render_clip(clip_id: int, progress) -> None:
     progress(1.0, "Done")
 
 
+def base_duration(clip: dict) -> float | None:
+    """Length of the rendered clip itself (before trim/intro)."""
+    n = clip.get("narration") or {}
+    return n.get("base_duration") or clip.get("duration")
+
+
 def finalize_clip(clip_id: int, progress) -> None:
-    """Apply the trim chosen in review and produce the file that gets posted."""
+    """Apply the trim chosen in review and, when narration is enabled, prepend the intro. The posted file is
+    <clip>_final.mp4; the original render is never modified."""
     clip = db.get("clips", clip_id)
     if not clip or not clip.get("path"):
         return
     src = Path(clip["path"])
+    base = float(base_duration(clip) or tools.media_duration(src))
     start = float(clip.get("trim_start") or 0.0)
-    end = float(clip.get("trim_end") or clip["duration"])
+    end = float(clip.get("trim_end") or base)
     final = src.with_name(src.stem + "_final.mp4")
+    trimmed = src.with_name(src.stem + "_trimmed.mp4")
     progress(0.2, "Trimming")
-    if start <= 0.05 and end >= float(clip["duration"]) - 0.05:
-        shutil.copyfile(src, final)
+    if start <= 0.05 and end >= base - 0.05:
+        shutil.copyfile(src, trimmed)
     else:
-        cut.trim(src, final, start, end)
+        cut.trim(src, trimmed, start, end)
+    narr = clip.get("narration") or {}
+    if narr.get("enabled") and narr.get("intro_path") and Path(narr["intro_path"]).exists():
+        progress(0.7, "Adding narrated intro")
+        narration.concat(Path(narr["intro_path"]), trimmed, final)
+        trimmed.unlink(missing_ok=True)
+    else:
+        trimmed.replace(final)
     dur = tools.media_duration(final)
-    db.update("clips", clip_id, {"final_path": str(final), "duration": dur})
+    narr["base_duration"] = base
+    db.update("clips", clip_id, {"final_path": str(final), "duration": dur, "narration": narr})
     progress(1.0, "Final file ready")
+
+
+def render_intro(clip_id: int, progress) -> None:
+    """Synthesize the chosen hook and render the intro segment; also a preview (intro + untrimmed clip)."""
+    clip = db.get("clips", clip_id)
+    if not clip or not clip.get("path"):
+        return
+    narr = dict(clip.get("narration") or {})
+    hook = (narr.get("chosen") or "").strip()
+    if not hook:
+        raise tools.ToolError("No hook chosen")
+    campaign = db.get("campaigns", clip["campaign_id"])
+    ok, why = rules.narration_allowed(campaign)
+    if not ok:
+        raise tools.ToolError(why)
+    src = Path(clip["path"])
+    work = _video_dir(db.get("videos", clip["video_id"])) / "narration"
+    work.mkdir(parents=True, exist_ok=True)
+    progress(0.1, "Synthesizing voice")
+    wav, voice_s, engine = tts.synthesize(hook, work / f"voice_{clip_id}.wav", narr.get("engine") or None)
+    progress(0.4, f"Rendering intro ({engine} voice, {voice_s:.1f}s)")
+    intro = config.CLIPS / f"{src.stem}_intro.mp4"
+    intro_s = narration.render_intro(src, float(clip.get("trim_start") or 0.0), hook, wav, voice_s, intro, work)
+    progress(0.8, "Building preview")
+    preview = config.CLIPS / f"{src.stem}_narrated_preview.mp4"
+    narration.concat(intro, src, preview)
+    narr.update({"intro_path": str(intro), "intro_duration": round(intro_s, 2), "audio_path": str(wav), "engine": engine,
+                 "preview_path": str(preview), "status": "ready", "error": None, "base_duration": float(base_duration(clip) or tools.media_duration(src))})
+    db.update("clips", clip_id, {"narration": narr, "final_path": None, "ai_text": 1})
+    progress(1.0, "Intro ready")
 
 
 def grab_frame(source_id: int, progress) -> None:

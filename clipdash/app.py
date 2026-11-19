@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, captions, config, db, disk, jobs, pipeline, rules, secrets_store, sources, tools
+from . import __version__, captions, config, db, disk, hooks, jobs, pipeline, rules, secrets_store, sources, tools, tts
 from .publish import get_publisher, is_dry_run, oauth_state, route_info, runner
 from .publish import scheduler as sched
 
@@ -68,8 +68,12 @@ def state():
 
 @app.get("/api/setup/checks")
 def setup_checks():
+    llm_ok, llm_why = hooks.available()
     return {"checks": tools.check_dependencies(), "secrets": {k: secrets_store.masked(k) for k in (
-        "youtube_client_secret", "tiktok_client_key", "tiktok_client_secret", "facebook_app_id", "facebook_app_secret", "service_api_key")},
+        "youtube_client_secret", "tiktok_client_key", "tiktok_client_secret", "facebook_app_id", "facebook_app_secret", "service_api_key",
+        "anthropic_api_key", "openai_api_key", "elevenlabs_api_key")},
+        "tts": tts.engines_status(), "llm": {"ok": llm_ok, "detail": llm_why, "provider": hooks.provider()},
+        "settings": {k: db.get_setting(k) for k in ("llm_provider", "llm_model", "tts_engine", "piper_voice")},
         "callback_urls": {"tiktok": f"http://127.0.0.1:{config.PORT}/oauth/callback/tiktok/",
                           "instagram": f"http://localhost:{config.PORT}/oauth/callback/instagram/"}}
 
@@ -77,14 +81,15 @@ def setup_checks():
 @app.post("/api/setup/action")
 def setup_action(body: dict):
     action = body.get("action")
-    if action not in ("install_tdcli", "download_whisper"):
+    if action not in ("install_tdcli", "download_whisper", "download_piper_voice"):
         _bad("Unknown action")
     return {"job_id": jobs.enqueue(action, {})}
 
 
 @app.post("/api/setup/secrets")
 def setup_secrets(body: dict):
-    allowed = {"youtube_client_secret", "tiktok_client_key", "tiktok_client_secret", "facebook_app_id", "facebook_app_secret", "service_api_key"}
+    allowed = {"youtube_client_secret", "tiktok_client_key", "tiktok_client_secret", "facebook_app_id", "facebook_app_secret", "service_api_key",
+               "anthropic_api_key", "openai_api_key", "elevenlabs_api_key"}
     for k, v in body.items():
         if k not in allowed:
             _bad(f"Unknown secret {k}")
@@ -114,7 +119,8 @@ def get_settings():
 @app.put("/api/settings")
 def put_settings(body: dict):
     for k, v in body.items():
-        if k in config.DEFAULT_SETTINGS or k in ("dry_run", "auto_render_top", "service_base_url", "tiktok_pkce_hex", "setup_done"):
+        if k in config.DEFAULT_SETTINGS or k in ("dry_run", "auto_render_top", "service_base_url", "tiktok_pkce_hex", "setup_done",
+                                                  "elevenlabs_voice_id", "elevenlabs_model", "system_voice"):
             db.set_setting(k, v)
     return db.all_settings()
 
@@ -152,7 +158,7 @@ def retry_job(job_id: int):
 
 CAMPAIGN_FIELDS = {"name", "creator", "url", "submission_url", "required_names", "required_hashtags", "min_len", "max_len",
                    "platforms", "source_start", "source_end", "watermark_allowed", "submit_minutes", "pay_model", "rate_per_1k",
-                   "per_clip_cap", "pool_budget", "min_views", "checklist", "notes", "rules_text", "active"}
+                   "per_clip_cap", "pool_budget", "min_views", "checklist", "notes", "rules_text", "active", "ai_narration", "bans_ai"}
 
 
 def _campaign_summary(c: dict) -> dict:
@@ -167,6 +173,8 @@ def _campaign_summary(c: dict) -> dict:
     if not c.get("checklist"):
         c["checklist"] = db.WORKSPACE_CHECKLIST if db.is_workspace(c) else rules.DEFAULT_CHECKLIST
     c["workspace"] = db.is_workspace(c)
+    ok, why = rules.narration_allowed(c)
+    c["narration"] = {"allowed": ok, "reason": why}
     return c
 
 
@@ -182,6 +190,8 @@ def create_campaign(body: dict):
         _bad("A campaign needs a name and a creator")
     data.setdefault("required_names", [data["creator"]])
     data.setdefault("checklist", rules.DEFAULT_CHECKLIST)
+    if data.get("bans_ai"):
+        data["ai_narration"] = 0
     cid = db.insert("campaigns", data)
     return _campaign_summary(db.get("campaigns", cid))
 
@@ -190,7 +200,10 @@ def create_campaign(body: dict):
 def update_campaign(cid: int, body: dict):
     c = db.get("campaigns", cid) or _404()
     allowed = {"platforms", "checklist", "notes"} if db.is_workspace(c) else CAMPAIGN_FIELDS
-    db.update("campaigns", cid, {k: v for k, v in body.items() if k in allowed})
+    data = {k: v for k, v in body.items() if k in allowed}
+    if data.get("bans_ai", c.get("bans_ai")):
+        data["ai_narration"] = 0
+    db.update("campaigns", cid, data)
     return _campaign_summary(db.get("campaigns", cid))
 
 
@@ -486,15 +499,21 @@ def _clip_full(c: dict) -> dict:
     c["checklist_items"] = (campaign or {}).get("checklist") or rules.DEFAULT_CHECKLIST
     c["effective_duration"] = _effective_duration(c)
     c["posts"] = db.rows("posts", "clip_id=?", (c["id"],))
+    n = c.get("narration") or {}
+    c["narration_preview_url"] = f"/media/clip/{c['id']}?narrated=1" if n.get("preview_path") and Path(n["preview_path"]).exists() else None
+    c["narration_allowed"], c["narration_reason"] = rules.narration_allowed(campaign) if campaign else (False, "")
     return c
 
 
 def _effective_duration(c: dict) -> float | None:
     if c.get("duration") is None:
         return None
+    base = float(pipeline.base_duration(c) or c["duration"])
     start = float(c.get("trim_start") or 0)
-    end = float(c.get("trim_end") or c["duration"])
-    return max(0.0, end - start)
+    end = float(c.get("trim_end") or base)
+    n = c.get("narration") or {}
+    intro = float(n.get("intro_duration") or 0) if n.get("enabled") else 0.0
+    return max(0.0, end - start) + intro
 
 
 def _revalidate(clip_id: int) -> dict:
@@ -503,6 +522,7 @@ def _revalidate(clip_id: int) -> dict:
     video = db.get("videos", clip["video_id"])
     check = dict(clip)
     check["duration"] = _effective_duration(clip) if clip.get("final_path") is None else clip["duration"]
+    check["narration"] = clip.get("narration") or {}
     res = rules.validate_clip(check, campaign, video)
     db.update("clips", clip_id, {"rule_results": res})
     return db.get("clips", clip_id)
@@ -560,6 +580,70 @@ def clip_hooks(cid: int):
     return captions.hook_candidates(clip.get("transcript") or [], float(clip.get("trim_start") or 0))[:8]
 
 
+@app.post("/api/clips/{cid}/narration/hooks")
+def narration_hooks(cid: int):
+    clip = db.get("clips", cid) or _404()
+    campaign = db.get("campaigns", clip["campaign_id"])
+    ok, why = rules.narration_allowed(campaign)
+    if not ok:
+        _bad(why)
+    source = None
+    video = db.get("videos", clip["video_id"])
+    if video and video.get("source_id"):
+        source = db.get("sources", video["source_id"])
+    creator = (source or {}).get("name") if db.is_workspace(campaign) else campaign["creator"]
+    moment = db.get("moments", clip["moment_id"]) if clip.get("moment_id") else None
+    ctx = dict(clip, chat_words=(moment or {}).get("chat_words") or [])
+    try:
+        generated = hooks.generate_hooks(ctx, creator or "the streamer")
+    except Exception as e:  # noqa: BLE001
+        _bad(str(e)[:400])
+    n = dict(clip.get("narration") or {})
+    n["hooks"] = generated
+    n.setdefault("chosen", generated[0])
+    db.update("clips", cid, {"narration": n})
+    return {"hooks": generated, "narration": n}
+
+
+@app.put("/api/clips/{cid}/narration")
+def set_narration(cid: int, body: dict):
+    """Choose/edit the hook, pick a voice engine, switch narration on (renders the intro) or off."""
+    clip = db.get("clips", cid) or _404()
+    if clip["status"] == "posted":
+        _bad("This clip has been posted; edits are locked.")
+    campaign = db.get("campaigns", clip["campaign_id"])
+    n = dict(clip.get("narration") or {})
+    if "hook" in body:
+        ok, t = hooks.validate_hook(body["hook"] or "")
+        if body["hook"] and not ok:
+            _bad(t)
+        n["chosen"] = t if body["hook"] else ""
+    if "engine" in body:
+        n["engine"] = body["engine"] or None
+    enabled = bool(body.get("enabled", n.get("enabled", False)))
+    if enabled:
+        ok, why = rules.narration_allowed(campaign)
+        if not ok:
+            _bad(why)
+        if not n.get("chosen"):
+            _bad("Pick or write a hook first")
+    changed_hook = n.get("chosen") != (clip.get("narration") or {}).get("chosen") or n.get("engine") != (clip.get("narration") or {}).get("engine")
+    n["enabled"] = enabled
+    data = {"narration": n, "final_path": None, "ai_text": 1 if enabled else 0}
+    if clip["status"] == "approved":
+        data["status"] = "pending"
+    if enabled and (changed_hook or not n.get("intro_path") or not Path(n.get("intro_path", "")).exists()):
+        n["status"] = "rendering"
+        n["intro_path"] = None
+        n["preview_path"] = None
+        data["narration"] = n
+        db.update("clips", cid, data)
+        jobs.enqueue("render_intro", {"clip_id": cid})
+    else:
+        db.update("clips", cid, data)
+    return _clip_full(_revalidate(cid))
+
+
 @app.post("/api/clips/{cid}/approve")
 def approve_clip(cid: int, body: dict | None = None):
     clip = db.get("clips", cid) or _404()
@@ -569,6 +653,9 @@ def approve_clip(cid: int, body: dict | None = None):
     if body and "checklist" in body:
         db.update("clips", cid, {"checklist": body["checklist"]})
     clip = _revalidate(cid)
+    n = clip.get("narration") or {}
+    if n.get("enabled") and n.get("status") != "ready":
+        raise HTTPException(409, {"message": "The narrated intro is still rendering (or failed). Wait for it or switch narration off.", "failed": []})
     failed = [r for r in clip["rule_results"] if not r["ok"]]
     if failed:
         raise HTTPException(409, {"message": "Rule checks fail; fix them before approving.", "failed": failed})
@@ -828,7 +915,9 @@ def create_posts(body: dict):
         for t in campaign.get("required_hashtags") or []:
             if t and not rules._contains(full, t):
                 _bad(f"{acct['platform']} post text must include {t}")
-        options = (body.get("options") or {}).get(str(aid)) or {}
+        options = dict((body.get("options") or {}).get(str(aid)) or {})
+        if (clip.get("narration") or {}).get("enabled"):
+            options["synthetic"] = True   # AI voice intro → altered/synthetic content disclosure on every route
         try:
             pub = get_publisher(acct)
         except ValueError as e:
@@ -941,9 +1030,11 @@ def refresh_stats(campaign_id: int | None = None):
 # ------------------------------------------------------------------ media & UI
 
 @app.get("/media/clip/{cid}")
-def media_clip(cid: int, final: bool = False):
+def media_clip(cid: int, final: bool = False, narrated: bool = False):
     c = db.get("clips", cid) or _404()
     p = c.get("final_path") if final and c.get("final_path") else c.get("path")
+    if narrated:
+        p = (c.get("narration") or {}).get("preview_path")
     if not p or not Path(p).exists():
         _404("No file")
     return FileResponse(p, media_type="video/mp4")

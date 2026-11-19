@@ -166,6 +166,9 @@ function openCampaignEditor(c = null) {
     <div class="field"><label>Allowed platforms</label><div class="chips" id="f-plats">${['youtube', 'tiktok', 'instagram', 'x'].map((p) => `<span class="chip ${plats.includes(p) ? 'on' : ''}" data-p="${p}">${p}</span>`).join('')}</div></div>
     <div class="field"><label>Review checklist (one per line: things only a person can judge)</label><textarea id="f-check">${esc((c?.checklist || ['The creator is the main focus for the whole clip', 'Nothing in the clip makes the creator look bad or pushes a false narrative', 'No logos, overlays or third-party watermarks are visible', 'The clip stands on its own (a viewer gets it without context)']).join('\n'))}</textarea></div>
     <div class="field"><label>Rules text / notes</label><textarea id="f-rules">${v('rules_text')}</textarea></div>
+    <div class="option-box"><label class="check"><input type="checkbox" id="f-bans" ${c?.bans_ai ? 'checked' : ''}> The campaign's rules ban AI-generated content</label>
+      <label class="check"><input type="checkbox" id="f-narr" ${c?.ai_narration && !c?.bans_ai ? 'checked' : ''} ${c?.bans_ai ? 'disabled' : ''}> AI narration allowed (optional 3–6 s voiced hook intro before a clip)</label>
+      <div class="small muted" id="f-narr-why">${c?.bans_ai ? 'Locked off: this campaign bans AI-generated content, so a synthetic voice intro would get the clip rejected.' : 'Off by default. Narrated clips carry the altered/synthetic content disclosure on YouTube and TikTok.'}</div></div>
     <div class="row between">
       <div>${c ? `<label class="check"><input type="checkbox" id="f-active" ${c.active ? 'checked' : ''}> Active (sources are watched)</label>` : ''}</div>
       <div class="row">${c ? `<button class="btn danger" id="f-del">Delete</button>` : ''}<button class="btn primary" id="f-save">Save</button></div>
@@ -177,6 +180,7 @@ function openCampaignEditor(c = null) {
     set('#f-min', f.min_len); set('#f-rules', f.rules_text);
     if (f.pay_model) $('#f-pay', m).value = f.pay_model;
     if (f.watermark_allowed !== undefined) $('#f-wm', m).value = String(f.watermark_allowed);
+    if (f.bans_ai) { $('#f-bans', m).checked = true; $('#f-bans', m).onchange({ target: $('#f-bans', m) }); }
     if (f.creator && !$('#f-name', m).value) $('#f-name', m).value = f.creator + ' campaign';
     if (f.creator && !$('#f-names', m).value) $('#f-names', m).value = f.creator;
     if (f.platforms) $$('#f-plats .chip', m).forEach((ch) => ch.classList.toggle('on', f.platforms.includes(ch.dataset.p)));
@@ -187,6 +191,7 @@ function openCampaignEditor(c = null) {
     $('#c-parse-text', m).onclick = async () => { try { const r = await post('/api/campaigns/parse', { text: $('#c-rules', m).value, url: $('#c-url', m).value }); fill(r.fields); } catch (e) { toastErr(e); } };
   }
   $$('#f-plats .chip', m).forEach((ch) => ch.onclick = () => ch.classList.toggle('on'));
+  $('#f-bans', m).onchange = (e) => { const n = $('#f-narr', m); n.disabled = e.target.checked; if (e.target.checked) n.checked = false; $('#f-narr-why', m).textContent = e.target.checked ? 'Locked off: this campaign bans AI-generated content.' : 'Off by default. Narrated clips carry the altered/synthetic content disclosure on YouTube and TikTok.'; };
   $('#f-save', m).onclick = async () => {
     const list = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
     const body = {
@@ -198,6 +203,7 @@ function openCampaignEditor(c = null) {
       rate_per_1k: Number($('#f-rate', m).value) || 0, per_clip_cap: Number($('#f-cap', m).value) || 0, pool_budget: Number($('#f-pool', m).value) || 0,
       min_views: Number($('#f-mv', m).value) || 0, platforms: $$('#f-plats .chip.on', m).map((x) => x.dataset.p),
       checklist: $('#f-check', m).value.split('\n').map((x) => x.trim()).filter(Boolean), rules_text: $('#f-rules', m).value,
+      bans_ai: $('#f-bans', m).checked ? 1 : 0, ai_narration: $('#f-narr', m).checked && !$('#f-bans', m).checked ? 1 : 0,
     };
     if (c) body.active = $('#f-active', m).checked ? 1 : 0;
     if (!body.required_names.length) body.required_names = [body.creator];
@@ -454,6 +460,7 @@ async function openClip(id) {
           <div id="pt-body"></div>
           <div class="row" style="margin-top:8px"><button class="btn sm" id="pt-regen">Rebuild post text from hook</button><button class="btn sm primary" id="pt-save">Save text</button></div>
         </div>
+        <div class="panel" style="margin-top:12px" id="narr-panel"></div>
         <div class="panel" style="margin-top:12px">
           <b>Review checklist</b>
           <div id="checks">${cl.checklist_items.map((t, i) => `<label class="check"><input type="checkbox" data-i="${i}" ${cl.checklist && cl.checklist[i] ? 'checked' : ''}> ${esc(t)}</label>`).join('')}</div>
@@ -504,6 +511,29 @@ async function openClip(id) {
   const collectPt = () => { const pt = { ...(cl.post_text || {}) }; pt[tab] = { title: $('#pt-title', m) ? $('#pt-title', m).value : '', text: $('#pt-text', m).value }; cl.post_text = pt; };
   $('#pt-save', m).onclick = async () => { collectPt(); if (await save({ post_text: cl.post_text, hook: $('#hook', m).value, title: (cl.post_text.youtube || {}).title || $('#hook', m).value })) toast('Post text saved'); };
   $('#pt-regen', m).onclick = async () => { if (await save({ hook: $('#hook', m).value })) { ptBody(); toast('Rebuilt'); } };
+  const renderNarr = () => {
+    const n = cl.narration || {};
+    const box = $('#narr-panel', m);
+    if (!cl.narration_allowed) { box.innerHTML = `<b>Narrated hook intro</b><div class="small muted" style="margin-top:4px">${esc(cl.narration_reason)}</div>`; return; }
+    box.innerHTML = `<div class="row between"><b>Narrated hook intro (optional)</b><span class="badge ${n.enabled ? (n.status === 'ready' ? 'ok' : (n.status === 'error' ? 'bad' : 'warn')) : ''}">${n.enabled ? (n.status || 'rendering') : 'off'}</span></div>
+      <div class="small muted" style="margin:4px 0 8px">A synthetic voice reads a one-sentence cliffhanger over the frozen first frame (3–6 s), then the clip plays. The hook is written by a model from this clip's transcript; edit it freely. Posts get the altered/synthetic content disclosure automatically.</div>
+      <div class="field"><label>Hook (under 15 words, factual, no profanity)</label><input type="text" id="n-hook" value="${esc(n.chosen || '')}"></div>
+      <div class="chips" id="n-alts">${(n.hooks || []).map((h) => `<span class="chip ${h === n.chosen ? 'on' : ''}">${esc(h)}</span>`).join('')}</div>
+      <div class="row" style="margin-top:8px"><button class="btn sm" id="n-gen">Generate 3 hooks</button>
+        <select id="n-engine" style="width:auto"><option value="">Voice: auto (Piper → system)</option><option value="piper" ${n.engine === 'piper' ? 'selected' : ''}>Piper (local)</option><option value="system" ${n.engine === 'system' ? 'selected' : ''}>System voice</option><option value="elevenlabs" ${n.engine === 'elevenlabs' ? 'selected' : ''}>ElevenLabs</option></select>
+        <span class="grow"></span>
+        ${n.enabled ? `<button class="btn sm" id="n-off">Turn narration off</button><button class="btn sm primary" id="n-on">Re-render intro</button>` : `<button class="btn sm primary" id="n-on">Enable narration & render intro</button>`}</div>
+      ${n.error ? `<div class="small bad-text" style="margin-top:6px">${esc(n.error)}</div>` : ''}
+      ${n.enabled && n.status === 'ready' ? `<div class="row" style="margin-top:8px"><span class="small muted">Intro ${(n.intro_duration || 0).toFixed(1)} s (${esc(n.engine || '')} voice) · total ${fmtTime(cl.effective_duration)}</span><button class="btn sm" id="n-preview">▶ Preview with intro</button><button class="btn sm ghost" id="n-plain">▶ Original</button></div>` : ''}`;
+    $$('#n-alts .chip', m).forEach((ch) => ch.onclick = () => { $('#n-hook', m).value = ch.textContent; });
+    $('#n-gen', m).onclick = async () => { const b = $('#n-gen', m); b.disabled = true; b.textContent = 'Generating…'; try { const r = await post(`/api/clips/${cl.id}/narration/hooks`); cl.narration = r.narration; renderNarr(); toast('Hooks ready; pick or edit one'); } catch (e) { toastErr(e); b.disabled = false; b.textContent = 'Generate 3 hooks'; } };
+    $('#n-on', m).onclick = async () => { try { cl = await put(`/api/clips/${cl.id}/narration`, { hook: $('#n-hook', m).value, engine: $('#n-engine', m).value, enabled: true }); renderRules(); renderNarr(); toast('Rendering the intro in the background'); } catch (e) { toastErr(e); } };
+    const off = $('#n-off', m); if (off) off.onclick = async () => { try { cl = await put(`/api/clips/${cl.id}/narration`, { enabled: false }); renderRules(); renderNarr(); } catch (e) { toastErr(e); } };
+    const pv = $('#n-preview', m); if (pv) pv.onclick = () => { v.src = cl.narration_preview_url; v.play(); };
+    const pl = $('#n-plain', m); if (pl) pl.onclick = () => { v.src = cl.video_url; v.play(); };
+  };
+  renderNarr();
+  if ((cl.narration || {}).enabled && (cl.narration || {}).status === 'rendering') { const iv = setInterval(async () => { if (!$('#narr-panel')) return clearInterval(iv); const fresh = await get(`/api/clips/${cl.id}`); if ((fresh.narration || {}).status !== 'rendering') { clearInterval(iv); cl = fresh; renderRules(); renderNarr(); } }, 4000); }
   const checks = () => Object.fromEntries($$('#checks input', m).map((i) => [i.dataset.i, i.checked]));
   $('#approve', m).onclick = async () => {
     collectPt();
@@ -535,7 +565,7 @@ VIEWS.publish = async (el) => {
   for (const cl of clips) {
     const d = document.createElement('div'); d.className = 'clip-card ' + cl.status;
     const done = cl.posts.filter((p) => !['failed', 'cancelled'].includes(p.status)).map((p) => p.platform);
-    d.innerHTML = `<div class="thumb" style="background-image:url('${cl.thumb_url || ''}')"><div class="overlay-tag">${done.map((p) => `<span class="badge posted">${p}</span>`).join('')}${cl.final_path ? '' : '<span class="badge warn">exporting…</span>'}</div><span class="overlay-dur">${fmtTime(cl.effective_duration)}</span></div>
+    d.innerHTML = `<div class="thumb" style="background-image:url('${cl.thumb_url || ''}')"><div class="overlay-tag">${done.map((p) => `<span class="badge posted">${p}</span>`).join('')}${cl.final_path ? '' : '<span class="badge warn">exporting…</span>'}${(cl.narration || {}).enabled ? '<span class="badge pink">AI voice</span>' : ''}</div><span class="overlay-dur">${fmtTime(cl.effective_duration)}</span></div>
       <div class="meta"><b>${esc(cl.hook || cl.title)}</b><div class="row" style="margin-top:6px"><button class="btn sm primary" data-post ${usable.length ? '' : 'disabled'}>Post / schedule</button><button class="btn sm" data-view>Preview</button></div></div>`;
     $('[data-post]', d).onclick = () => openPostDialog(cl, usable, c);
     $('[data-view]', d).onclick = () => openClip(cl.id);
@@ -549,7 +579,7 @@ function renderQueue(el, posts) {
   el.innerHTML = `<table><tr><th>When</th><th>Clip</th><th>Account</th><th>Status</th><th>Link</th><th></th></tr>${posts.map((p) => `<tr>
     <td class="small">${p.scheduled_at ? fmtDate(p.scheduled_at) : (p.posted_at ? fmtDate(p.posted_at) : fmtDate(p.created_at))}${p.tz ? `<br><span class="muted">${esc(p.tz)}</span>` : ''}</td>
     <td class="small">${esc(p.clip?.hook || p.title || '#' + p.clip_id)}</td>
-    <td class="small">${esc(p.account?.label || '')}<br><span class="badge ${p.route}">${p.route}</span></td>
+    <td class="small">${esc(p.account?.label || '')}<br><span class="badge ${p.route}">${p.route}</span>${p.options?.synthetic ? ' <span class="badge pink" title="AI voice intro: synthetic-content disclosure set">AI voice</span>' : ''}</td>
     <td class="small"><span class="badge ${p.status}">${p.status}</span><br><span class="muted">${esc(p.state_detail || p.error || '')}</span></td>
     <td class="small">${p.url ? `<a href="${esc(p.url)}" target="_blank">open ↗</a>` : (['manual', 'private', 'draft'].includes(p.status) ? `<div class="row"><input type="text" placeholder="paste post link" data-link="${p.id}" style="width:170px"><button class="btn sm" data-mark="${p.id}">Live</button></div>` : '')}</td>
     <td class="small"><div class="row">
@@ -700,13 +730,26 @@ VIEWS.setup = async (el) => {
         <p class="small muted">An audited third-party API: public TikTok/Instagram posts and server-side scheduling without your own developer apps. First two connected accounts are free. Create a key at zernio.com → dashboard → API keys, connect your social accounts on their dashboard, then add accounts here with route "service".</p>
         <div class="field"><label>API key ${s.secrets.service_api_key ? `<span class="ok-text">(saved ${esc(s.secrets.service_api_key)})</span>` : ''}</label><input type="password" id="sec-svc"></div></div>
     </div>
+    <div class="panel" style="margin-top:14px"><h3 style="margin-top:0">Narration (optional AI hook intro)</h3>
+      <div class="form-grid">
+        <div class="field"><label>Hook writer (LLM)</label><select id="set-llm"><option value="anthropic" ${s.settings.llm_provider !== 'openai' ? 'selected' : ''}>Anthropic Claude</option><option value="openai" ${s.settings.llm_provider === 'openai' ? 'selected' : ''}>OpenAI</option></select></div>
+        <div class="field"><label>Anthropic API key ${s.secrets.anthropic_api_key ? `<span class="ok-text">(saved ${esc(s.secrets.anthropic_api_key)})</span>` : ''}</label><input type="password" id="sec-anth"></div>
+        <div class="field"><label>OpenAI API key ${s.secrets.openai_api_key ? `<span class="ok-text">(saved ${esc(s.secrets.openai_api_key)})</span>` : ''}</label><input type="password" id="sec-oai"></div>
+        <div class="field"><label>Voice engine</label><select id="set-tts"><option value="auto" ${s.settings.tts_engine === 'auto' ? 'selected' : ''}>Auto (Piper, then system voice)</option><option value="piper" ${s.settings.tts_engine === 'piper' ? 'selected' : ''}>Piper (local, free)</option><option value="system" ${s.settings.tts_engine === 'system' ? 'selected' : ''}>System voice</option><option value="elevenlabs" ${s.settings.tts_engine === 'elevenlabs' ? 'selected' : ''}>ElevenLabs</option></select></div>
+        <div class="field"><label>ElevenLabs API key ${s.secrets.elevenlabs_api_key ? '<span class="ok-text">(saved)</span>' : ''}</label><input type="password" id="sec-el"></div>
+      </div>
+      <div>${s.tts.map((t) => `<div class="rule ${t.ok ? '' : 'bad'}"><span class="dot"></span><b style="min-width:200px">${esc(t.label)}</b><span class="grow">${esc(t.detail)}</span>${t.id === 'piper' && !t.ok ? '<button class="btn sm" data-action="download_piper_voice">Download voice</button>' : ''}</div>`).join('')}
+        <div class="rule ${s.llm.ok ? '' : 'bad'}"><span class="dot"></span><b style="min-width:200px">Hook writer</b><span class="grow">${esc(s.llm.ok ? 'key saved for ' + s.llm.provider : s.llm.detail)}</span></div></div>
+      <div class="small muted" style="margin-top:6px">Narration is off per campaign by default and locked off where the rules ban AI content. Hooks are always shown to you before anything renders.</div></div>
     <div class="row" style="margin-top:14px"><button class="btn primary" id="sec-save">Save credentials</button><span class="grow"></span>${allOk ? '<button class="btn yellow" id="setup-done">Setup complete → go to Overview</button>' : '<span class="muted small">Fix the red items above to finish setup.</span>'}</div>
     <p class="small muted" style="margin-top:14px">Credentials are stored in <code>data/secrets.json</code> (gitignored, user-only permissions), never in the repository. See <code>.env.example</code> for the list.</p>`;
   $$('[data-action]').forEach((b) => b.onclick = () => post('/api/setup/action', { action: b.dataset.action }).then(() => { toast('Downloading in the background'); b.disabled = true; }).catch(toastErr));
   $('#sec-save').onclick = async () => {
     const body = {}; const take = (id, key) => { const v = $(id).value.trim(); if (v) body[key] = v; };
     take('#sec-yt', 'youtube_client_secret'); take('#sec-ttk', 'tiktok_client_key'); take('#sec-tts', 'tiktok_client_secret'); take('#sec-fbid', 'facebook_app_id'); take('#sec-fbs', 'facebook_app_secret'); take('#sec-svc', 'service_api_key');
-    if (!Object.keys(body).length) return toast('Nothing to save', 'warn');
+    take('#sec-anth', 'anthropic_api_key'); take('#sec-oai', 'openai_api_key'); take('#sec-el', 'elevenlabs_api_key');
+    try { await put('/api/settings', { llm_provider: $('#set-llm').value, tts_engine: $('#set-tts').value }); } catch (e) { toastErr(e); }
+    if (!Object.keys(body).length) { toast('Settings saved'); render(); return; }
     try { await post('/api/setup/secrets', body); toast('Saved'); render(); } catch (e) { toastErr(e); }
   };
   const done = $('#setup-done'); if (done) done.onclick = () => post('/api/setup/done').then(() => { S.state.setup_done = true; location.hash = '#/'; });

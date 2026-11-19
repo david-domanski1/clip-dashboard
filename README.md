@@ -110,6 +110,27 @@ scanned exactly like campaign sources, but:
 - If a streamer also has an active campaign in the app, adding them here is blocked and you are pointed to
   the campaign, so its rules and submissions apply.
 
+## Narrated hook intro (optional, off by default)
+
+A 3–6 second intro before a clip: a synthetic voice reads a one-sentence cliffhanger hook over the clip's first
+frame (slow push-in, darkened 40%) with the hook as large centred text, then the real clip plays. Voice starts
+within the first second; the real action starts by about second 4.
+
+- **Per campaign:** *AI narration allowed* in the campaign rules, default off. When the campaign's rules ban
+  AI-generated content (the LACY campaign does; *Read page* detects "no AI" wording) it is locked off and the
+  UI says why. In the Streamer clips workspace it is available.
+- **Hooks** are written by a model from the clip's transcript and chat context (Setup → Narration: Anthropic
+  Claude by default, OpenAI as the alternative; the key stays in `data/secrets.json`). Review shows the chosen
+  hook as an editable field with three alternatives; nothing renders until you have seen it. Hooks must be under
+  15 words, pass the profanity filter and stay factual about what happens in the clip.
+- **Voice:** Piper (local, free; one ~60 MB voice downloads on first use) or the computer's built-in voice
+  (macOS `say`, Windows speech), with ElevenLabs as an optional adapter behind a key.
+- **Disclosure:** posts of narrated clips set YouTube's *altered or synthetic content* flag
+  (`containsSyntheticMedia`) and TikTok's AI-generated label (`is_aigc`) automatically; the assisted route adds a
+  reminder to the caption file. "AI voice" appears in the clip's rule results.
+- The intro is rendered as a separate segment and concatenated in front of the clip; the original clip is kept,
+  so narration can be switched off and the clip re-exported. The total length must still meet the campaign minimum.
+
 ## Connecting accounts
 
 Each account uses one route. The Accounts page shows what every route can and cannot do.

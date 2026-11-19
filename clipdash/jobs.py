@@ -120,6 +120,12 @@ def _on_error(job: dict, err: str) -> None:
             remaining = db.execute("SELECT COUNT(*) c FROM clips WHERE video_id=? AND status='rendering'", (clip["video_id"],)).fetchone()["c"]
             if remaining == 0:
                 _set_video(clip["video_id"], status="done", stage="Some clips failed", error=err[:300])
+    elif job["type"] == "render_intro" and p.get("clip_id"):
+        clip = db.get("clips", p["clip_id"])
+        if clip:
+            n = dict(clip.get("narration") or {})
+            n.update({"status": "error", "error": err[:300]})
+            db.update("clips", clip["id"], {"narration": n})
     elif job["type"] == "publish_post" and p.get("post_id"):
         post = db.get("posts", p["post_id"])
         if post and post["status"] in ("publishing", "scheduled"):
@@ -174,3 +180,5 @@ def register_handlers() -> None:
     HANDLERS["refresh_stats"] = lambda p, pr: runner.refresh_stats(pr, p.get("campaign_id"))
     HANDLERS["install_tdcli"] = lambda p, pr: tools.install_tdcli(lambda s: pr(None, s))
     HANDLERS["download_whisper"] = lambda p, pr: tools.download_whisper_model(db.get_setting("whisper_model"), lambda s: pr(None, s))
+    HANDLERS["render_intro"] = lambda p, pr: pipeline.render_intro(p["clip_id"], pr)
+    HANDLERS["download_piper_voice"] = lambda p, pr: __import__("clipdash.tts", fromlist=["x"]).download_piper_voice(lambda s: pr(None, s))
