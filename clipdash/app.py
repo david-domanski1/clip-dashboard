@@ -137,6 +137,11 @@ def list_jobs(limit: int = 40):
     return db.rows("jobs", "1=1", order="id DESC")[:limit]
 
 
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: int):
+    return {"cancelled": jobs.cancel(job_id)}
+
+
 @app.post("/api/jobs/{job_id}/retry")
 def retry_job(job_id: int):
     jobs.retry(job_id)
@@ -375,9 +380,44 @@ def list_moments(vid: int):
     for m in db.rows("moments", "video_id=?", (vid,), order="rank"):
         clip = db.one("clips", "moment_id=?", (m["id"],))
         m["clip"] = pipeline.clip_public(clip) if clip else None
+        if clip:
+            job = db.one("jobs", "type='render_clip' AND status IN ('queued','running') AND payload LIKE ?", (f'%"clip_id": {clip["id"]}%',))
+            m["render_job"] = {k: job[k] for k in ("id", "status", "progress", "message")} if job else None
         m["ts"] = _fmt(m["t"])
+        m["thumb_url"] = f"/media/moment/{m['id']}" if m.get("thumb") and Path(m["thumb"]).exists() else None
         out.append(m)
     return out
+
+
+@app.post("/api/videos/{vid}/render_next")
+def render_next(vid: int):
+    if not db.get("videos", vid):
+        _404()
+    cid = pipeline.render_next_best(vid)
+    if cid is None:
+        _bad("Every moment of this video already has a clip")
+    return {"clip_id": cid}
+
+
+@app.post("/api/clips/{cid}/cancel")
+def cancel_render(cid: int):
+    clip = db.get("clips", cid) or _404()
+    if clip["status"] != "rendering":
+        _bad("Only rendering clips can be cancelled")
+    n = pipeline.cancel_clip_jobs(cid)
+    if n == 0:  # no job found (e.g. lost on restart): clean up directly
+        if clip.get("moment_id"):
+            db.update("moments", clip["moment_id"], {"status": "found"})
+        db.delete("clips", cid)
+    return {"cancelled": True}
+
+
+@app.get("/media/moment/{mid}")
+def media_moment(mid: int):
+    m = db.get("moments", mid) or _404()
+    if not m.get("thumb") or not Path(m["thumb"]).exists():
+        _404("No thumbnail")
+    return FileResponse(m["thumb"], media_type="image/jpeg")
 
 
 @app.post("/api/moments/{mid}/render")

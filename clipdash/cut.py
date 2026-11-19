@@ -191,10 +191,12 @@ def build_filter(facecam: dict | None, layout: str, ass_path: Path | None, W: in
             f"[camv][gamev]vstack=inputs=2[v0];[v0]format=yuv420p"
         )
     else:
-        # Gameplay fills the width; a blurred copy fills the rest of the 9:16 frame.
+        # Gameplay fills the width; a blurred copy fills the rest of the 9:16 frame. The blur is computed on a
+        # 1/8-size copy and scaled back up: a full-frame boxblur at 1080×1920×60fps was the slowest step of a render.
         f = (
             f"[0:v]split=2[bg][fg];"
-            f"[bg]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},boxblur=30:5[bgv];"
+            f"[bg]scale={W // 8}:{H // 8}:force_original_aspect_ratio=increase,crop={W // 8}:{H // 8},boxblur=4:2,"
+            f"scale={W}:{H}:flags=bilinear,eq=brightness=-0.08[bgv];"
             f"[fg]scale={W}:-2[fgv];"
             f"[bgv][fgv]overlay=(W-w)/2:(H-h)/2[v0];[v0]format=yuv420p"
         )

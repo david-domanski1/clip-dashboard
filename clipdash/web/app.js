@@ -350,7 +350,7 @@ VIEWS.videos = async (el, arg) => {
         <div data-moments></div>
       </div>
       <div class="row" style="align-items:flex-start">
-        ${v.moment_count ? `<button class="btn sm" data-show>Moments</button>` : ''}
+        ${v.moment_count ? `<button class="btn sm" data-show>Show / hide moments</button>` : ''}
         ${cc.pending ? `<a class="btn sm primary" href="#/review/${v.id}">Review ${cc.pending}</a>` : ''}
         <button class="btn sm danger" data-del>Delete</button>
       </div>`;
@@ -358,19 +358,33 @@ VIEWS.videos = async (el, arg) => {
     $('[data-rescan]', d).onclick = () => { const w = readWindow(d, 'v' + v.id); if (w === null) return; post(`/api/videos/${v.id}/rescan`, { window: w, override: v.status === 'skipped' }).then(render).catch(toastErr); };
     const rest = $('[data-rest]', d); if (rest) rest.onclick = () => post(`/api/videos/${v.id}/scan_rest`).then((r) => { toast(`${r.queued_chunks} chunks queued`); render(); }).catch(toastErr);
     $('[data-del]', d).onclick = async () => { if (await confirmDlg('Delete this video and all its clips?', 'Delete')) { await del(`/api/videos/${v.id}`); render(); } };
-    const showBtn = $('[data-show]', d);
-    if (showBtn) showBtn.onclick = async () => {
-      const x = $('[data-moments]', d);
-      if (x.innerHTML) { x.innerHTML = ''; return; }
+    const momentsBox = $('[data-moments]', d);
+    const loadMoments = async () => {
       const ms = await get(`/api/videos/${v.id}/moments`);
-      x.innerHTML = `<div style="margin-top:8px">${ms.map((m) => `<div class="moment"><span class="t">${m.ts}</span><span class="score">${m.score}</span>
-        <div class="grow"><div class="reason">${m.reasons.map(esc).join(' · ')}</div>${m.chat_words.length ? `<div class="reason">chat: ${m.chat_words.map(esc).join(', ')}</div>` : ''}</div>
-        ${m.clip ? `<span class="badge ${m.clip.status}">${m.clip.status}</span>` : `<button class="btn sm" data-render="${m.id}">Render clip</button>`}
-        <a class="small" href="${esc(v.url)}${v.platform === 'youtube' ? '&t=' + Math.round(m.t) : '?t=' + Math.round(m.t) + 's'}" target="_blank">open ↗</a></div>`).join('')}
+      if (!ms.length) { momentsBox.innerHTML = ''; return; }
+      const unrendered = ms.filter((m) => !m.clip).length;
+      momentsBox.innerHTML = `<div style="margin-top:10px"><div class="row between"><b class="small">Ranked moments</b>
+          ${unrendered ? `<button class="btn sm primary" data-next>Render next best</button>` : ''}</div>
+        ${ms.map((m) => `<div class="moment ${m.flags?.length ? 'flagged' : ''}">
+          <div class="mthumb" style="background-image:url('${m.thumb_url || ''}')"></div>
+          <span class="t">${m.ts}</span><span class="score" title="${m.raw_score != null && m.raw_score !== m.score ? 'raw ' + m.raw_score : ''}">${m.score}</span>
+          <div class="grow"><div class="reason">${m.reasons.map(esc).join(' · ')}</div>
+            ${m.chat_words.length ? `<div class="reason">chat: ${m.chat_words.map(esc).join(', ')}</div>` : ''}
+            ${m.flags?.length ? `<div>${m.flags.map((f) => `<span class="badge warn">${f === 'chat_spam' ? 'chat spam' : f === 'low_speech' ? 'low speech' : esc(f)}</span>`).join(' ')}</div>` : ''}</div>
+          ${m.clip ? (m.clip.status === 'rendering'
+              ? `<span class="badge rendering">${esc(m.render_job?.message || 'rendering')}</span><button class="btn sm danger" data-cancel="${m.clip.id}">Cancel</button>`
+              : `<span class="badge ${m.clip.status}">${m.clip.status}</span>${['pending', 'approved'].includes(m.clip.status) ? `<a class="btn sm" href="#/review/${v.id}">Review</a>` : ''}`)
+            : `<button class="btn sm" data-render="${m.id}">Render</button>`}
+          <a class="small" href="${esc(v.url)}${v.platform === 'youtube' ? '&t=' + Math.round(m.t) : '?t=' + Math.round(m.t) + 's'}" target="_blank">open ↗</a></div>`).join('')}
         <div class="row" style="margin-top:8px"><span class="small muted">Render at a time of your own:</span><input type="text" placeholder="hh:mm:ss" style="width:110px" data-custom-t><button class="btn sm" data-custom>Render</button></div></div>`;
-      $$('[data-render]', x).forEach((b) => b.onclick = () => post(`/api/moments/${b.dataset.render}/render`).then(() => { toast('Rendering'); b.replaceWith('queued'); }).catch(toastErr));
-      $('[data-custom]', x).onclick = () => { const t = parseHms($('[data-custom-t]', x).value); if (t == null) return toast('Enter hh:mm:ss', 'warn'); post(`/api/videos/${v.id}/render_custom`, { t }).then(() => toast('Rendering')).catch(toastErr); };
+      $$('[data-render]', momentsBox).forEach((b) => b.onclick = () => post(`/api/moments/${b.dataset.render}/render`).then(() => { toast('Rendering'); loadMoments(); }).catch(toastErr));
+      $$('[data-cancel]', momentsBox).forEach((b) => b.onclick = () => post(`/api/clips/${b.dataset.cancel}/cancel`).then(() => { toast('Cancelled'); setTimeout(loadMoments, 800); }).catch(toastErr));
+      const nx = $('[data-next]', momentsBox); if (nx) nx.onclick = () => post(`/api/videos/${v.id}/render_next`).then(() => { toast('Rendering next best'); loadMoments(); }).catch(toastErr);
+      $('[data-custom]', momentsBox).onclick = () => { const t = parseHms($('[data-custom-t]', momentsBox).value); if (t == null) return toast('Enter hh:mm:ss', 'warn'); post(`/api/videos/${v.id}/render_custom`, { t }).then(() => { toast('Rendering'); loadMoments(); }).catch(toastErr); };
     };
+    const showBtn = $('[data-show]', d);
+    if (showBtn) showBtn.onclick = () => { if (momentsBox.innerHTML) momentsBox.innerHTML = ''; else loadMoments(); };
+    if (v.moment_count && (S.openMoments === v.id || vids.length <= 3)) loadMoments();
     list.appendChild(d);
   }
 };
@@ -691,7 +705,7 @@ VIEWS.settings = async (el) => {
   const s = await get('/api/settings');
   const F = [
     ['lead_in', 'Seconds before the spike the clip starts', 'number'], ['download_length', 'Seconds downloaded per moment (trim inside this)', 'number'],
-    ['max_moments', 'Max moments per video', 'number'], ['auto_render_top', 'Auto-render the top N moments', 'number'], ['min_gap', 'Minimum gap between moments (s)', 'number'],
+    ['max_moments', 'Max moments per video', 'number'], ['auto_render_top', 'Auto-render the top N moments per scan (default 1; render the rest on demand)', 'number'], ['spam_fraction', 'Flag a moment as chat spam when this share of messages repeat one thing', 'number'], ['min_words_per_min', 'Flag a clip as low speech below this many words per minute', 'number'], ['min_gap', 'Minimum gap between moments (s)', 'number'],
     ['skip_start', 'Ignore the first N seconds of a stream', 'number'], ['chat_spike_factor', 'Chat spike factor (× usual rate = score 1)', 'number'],
     ['audio_spike_db', 'Audio spike (dB above usual = score 1)', 'number'], ['whisper_model', 'Whisper model (tiny / base / small / medium)', 'text'],
     ['facecam_fraction', 'Facecam height as a fraction of the frame', 'number'], ['cache_cap_mb', 'Cache cap (MB)', 'number'], ['watch_interval_min', 'Check sources every N minutes', 'number'],

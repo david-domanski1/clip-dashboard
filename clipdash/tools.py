@@ -40,34 +40,101 @@ def _popen_kwargs() -> dict:
     return kw
 
 
+_procs: dict[int, list[subprocess.Popen]] = {}
+_procs_lock = threading.Lock()
+_current = threading.local()
+
+
+class Cancelled(RuntimeError):
+    pass
+
+
+def set_current_job(job_id: int | None) -> None:
+    _current.job_id = job_id
+
+
+def _register(p: subprocess.Popen) -> None:
+    jid = getattr(_current, "job_id", None)
+    if jid is not None:
+        with _procs_lock:
+            _procs.setdefault(jid, []).append(p)
+
+
+def _unregister(p: subprocess.Popen) -> None:
+    jid = getattr(_current, "job_id", None)
+    with _procs_lock:
+        if jid in _procs:
+            _procs[jid] = [x for x in _procs[jid] if x is not p]
+
+
+def kill_job_processes(job_id: int) -> int:
+    with _procs_lock:
+        ps = list(_procs.get(job_id, []))
+    for p in ps:
+        try:
+            p.kill()
+        except OSError:
+            pass
+    return len(ps)
+
+
+def kill_all_processes() -> None:
+    """Called at shutdown so ffmpeg/yt-dlp children never outlive the app (a restart once left four ffmpegs running)."""
+    with _procs_lock:
+        ps = [p for lst in _procs.values() for p in lst]
+    for p in ps:
+        try:
+            p.kill()
+        except OSError:
+            pass
+
+
 def run(cmd: list[str], timeout: int | None = None, on_line: Callable[[str], None] | None = None,
         cwd: str | None = None) -> str:
     """Run a command and return stdout; raise ToolError with the stderr tail on failure.
-    `ffmpeg` and `yt-dlp` at cmd[0] are resolved to the bundled binaries."""
+    `ffmpeg` and `yt-dlp` at cmd[0] are resolved to the bundled binaries. The child is registered to its job
+    so a cancel from the UI can kill it; a killed child raises Cancelled."""
     cmd = list(cmd)
     if cmd[0] == "ffmpeg":
         cmd[0] = ffmpeg_path()
     elif cmd[0] == "yt-dlp":
         cmd = [sys.executable, "-m", "yt_dlp", "--ffmpeg-location", ffmpeg_path(), "--no-warnings"] + cmd[1:]
     if on_line is None:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd,
-                           encoding="utf-8", errors="replace", **_popen_kwargs())
-        if r.returncode != 0:
-            raise ToolError(f"{Path(cmd[0]).name} failed:\n{r.stderr[-2500:] or r.stdout[-2500:]}")
-        return r.stdout
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd,
+                             encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, **_popen_kwargs())
+        _register(p)
+        try:
+            out, err = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            raise ToolError(f"{Path(cmd[0]).name} timed out after {timeout}s")
+        finally:
+            _unregister(p)
+        if p.returncode != 0:
+            if p.returncode in (-9, -15, 137, 143):
+                raise Cancelled(f"{Path(cmd[0]).name} was cancelled")
+            raise ToolError(f"{Path(cmd[0]).name} failed:\n{err[-2500:] or out[-2500:]}")
+        return out
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=cwd,
-                         encoding="utf-8", errors="replace", **_popen_kwargs())
+                         encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, **_popen_kwargs())
+    _register(p)
     out: list[str] = []
     assert p.stdout is not None
-    for line in p.stdout:
-        out.append(line)
-        try:
-            on_line(line.rstrip())
-        except Exception:
-            pass
-    p.wait(timeout=timeout)
+    try:
+        for line in p.stdout:
+            out.append(line)
+            try:
+                on_line(line.rstrip())
+            except Exception:
+                pass
+        p.wait(timeout=timeout)
+    finally:
+        _unregister(p)
     if p.returncode != 0:
-        raise ToolError(f"{Path(cmd[0]).name} failed:\n{''.join(out)[-2500:]}")
+        if p.returncode in (-9, -15, 137, 143):
+            raise Cancelled(f"{Path(cmd[0]).name} was cancelled")
+        meaningful = [l for l in out if not l.lstrip().startswith(("frame=", "size=", "[download]")) and l.strip()]
+        raise ToolError(f"{Path(cmd[0]).name} failed (exit {p.returncode}):\n{''.join(meaningful)[-2500:] or ''.join(out)[-800:]}")
     return "".join(out)
 
 

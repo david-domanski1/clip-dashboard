@@ -194,3 +194,37 @@ def top_chat_words(rows: list[list], t: float, span: int = 30, n: int = 5) -> li
                 if len(w) > 2 and not w.startswith("@") and not w.startswith("http"):
                     c[w.lower()] += 1
     return [w for w, _ in c.most_common(n)]
+
+
+STOPWORDS = {"the", "and", "you", "lol", "lmao", "bro", "this", "that", "with", "for", "are", "was", "not", "but", "just",
+             "like", "what", "get", "have", "its", "it's", "he's", "she", "him", "his", "her", "they", "them", "can", "cant",
+             "dont", "don't", "why", "how", "who", "yes", "nah", "yeah", "omg", "wtf", "lul", "kekw", "chat", "lacy"}
+
+
+def _norm_text(m: str) -> str:
+    m = re.sub(r"[^a-z0-9 ]", " ", m.lower())
+    m = re.sub(r"(.)\1{2,}", r"\1\1", m)
+    return re.sub(r"\s+", " ", m).strip()[:40]
+
+
+def chat_spam(rows: list[list], t: float, span: int = 30) -> tuple[float, str]:
+    """How much of the chat around t is one message or one word repeated (AFK/'wake up' spam, copypasta).
+    Returns (spam fraction, the repeated text or word). Varied chat scores near 0."""
+    msgs = [_norm_text(m or "") for rt, m in rows if t - 5 <= rt <= t + span]
+    msgs = [m for m in msgs if m]
+    if len(msgs) < 8:
+        return 0.0, ""
+    texts: Counter = Counter(msgs)
+    top_text, n_text = texts.most_common(1)[0]
+    distinct_ratio = len(texts) / len(msgs)
+    tokens: Counter = Counter()
+    for m in msgs:
+        for w in {w[:4] for w in m.split() if len(w) >= 3 and w not in STOPWORDS}:
+            tokens[w] += 1
+    top_tok, n_tok = tokens.most_common(1)[0] if tokens else ("", 0)
+    text_frac = n_text / len(msgs)
+    tok_frac = n_tok / len(msgs) if distinct_ratio < 0.85 else 0.0
+    if tok_frac > text_frac:
+        full = next((w for m in msgs for w in m.split() if w.startswith(top_tok)), top_tok)
+        return round(tok_frac, 2), full
+    return round(text_frac, 2), top_text

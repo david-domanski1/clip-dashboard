@@ -70,6 +70,13 @@ First launch shows **Setup**:
    scanned. Videos published before the campaign's footage start date are marked *outside campaign window* and
    not scanned (channel watching does the same); *Scan anyway* overrides for one video. The first scan also loads
    the Whisper model, which takes a minute.
+   After a scan the video shows its **ranked moments**: timestamp, score, why it was picked, the top chat words
+   and a thumbnail. Only the single best moment is rendered automatically (Settings → *auto-render top N*,
+   default 1); every other moment has a **Render** button, plus **Render next best**. Moments where the streamer
+   is barely talking (Silero VAD on 40 s of audio) or where chat is one repeated message are labelled *low speech*
+   / *chat spam* and scored down, so an asleep streamer with a busy chat no longer wins. Queued or running renders
+   can be cancelled from the same list. On an Apple Silicon Mac a 2-hour window scans in about 30 s and the first
+   clip is reviewable in about 2 minutes (hardware H.264 encoding; software fallback elsewhere).
    For a channel instead of a single video, go to **Sources** and add `youtube.com/@name` or `twitch.tv/name`;
    the suggestion chips resolve IShowSpeed, CaseOh, LACY and Kai Cenat by lookup.
 3. **Sources → Set facecam crop** (once per channel). Grab a frame, drag a box around the webcam, save. Clips

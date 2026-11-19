@@ -139,3 +139,7 @@ details summary{cursor:pointer;color:var(--teal);font-weight:600}
 .moment .score{color:var(--pink);font-weight:700;min-width:40px}
 .option-box{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:8px}
 .ok-text{color:var(--green)}.bad-text{color:var(--red)}.warn-text{color:var(--yellow)}
+
+.mthumb{width:64px;height:36px;border-radius:6px;background:#000 center/cover no-repeat;flex:none;border:1px solid var(--line)}
+.moment.flagged{opacity:.55}
+.moment.flagged .score{color:var(--muted)}

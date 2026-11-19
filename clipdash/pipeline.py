@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import captions as cap
-from . import chat, config, cut, db, disk, rules, signals, sources, tools
+from . import chat, config, cut, db, disk, rules, signals, sources, speech, thumbs, tools
 
 CHUNK_S = 2 * 3600          # "Scan the rest" works in 2-hour chunks
 LONG_VOD_S = 4 * 3600       # VODs longer than this default to the last 2 hours
@@ -262,15 +262,50 @@ def scan_video(video_id: int, progress, window=None) -> None:
     video = db.get("videos", video_id)
     if not video:
         return
+    # AFK / spam filter: a chat spike made of one repeated message ("WAKE UP") is not a highlight
+    spam_cut = float(settings.get("spam_fraction", 0.5))
+    for m in moments:
+        m["chat_words"] = signals.top_chat_words(rows, m["t"]) if rows else []
+        m["flags"] = []
+        m["raw_score"] = m["score"]
+        if rows:
+            frac, what = signals.chat_spam(rows, m["t"])
+            if frac >= spam_cut:
+                m["flags"].append("chat_spam")
+                m["score"] = round(m["score"] * 0.2, 2)
+                m["reasons"].append(f"Chat spam: {int(frac * 100)}% of messages repeat “{what}” (scored down)")
+    # Speech check: ~40 s of audio around each candidate through Silero VAD. A streamer asleep or AFK while
+    # chat plays word games shows up as almost no speech.
+    low_cut = float(settings.get("min_speech_fraction", 0.12))
+    _set_video(video_id, stage="Checking for speech at each moment", progress=0.88)
+    progress(0.88, "Checking for speech at each moment")
+    for m in moments:
+        frac = speech.moment_speech(video, m["t"])
+        m["speech"] = frac
+        if frac is not None and frac < low_cut:
+            m["flags"].append("low_speech")
+            m["score"] = round(m["score"] * 0.3, 2)
+            m["reasons"].append(f"Low speech: only {int(frac * 100)}% of the next 40 s has talking (scored down)")
+        elif frac is not None:
+            m["reasons"].append(f"Speech in {int(frac * 100)}% of the next 40 s")
+    moments.sort(key=lambda m: -m["score"])
     # merge: drop un-rendered moments inside this window, insert the new ones, re-rank everything
     db.execute("DELETE FROM moments WHERE video_id=? AND status='found' AND t>=? AND t<=?", (video_id, start, end))
     new_ids = []
     for m in moments:
-        m["chat_words"] = signals.top_chat_words(rows, m["t"]) if rows else []
-        new_ids.append(db.insert("moments", {"video_id": video_id, "t": m["t"], "score": m["score"], "reasons": m["reasons"],
-                                             "chat_words": m["chat_words"], "rank": 0}))
+        new_ids.append(db.insert("moments", {"video_id": video_id, "t": m["t"], "score": m["score"], "raw_score": m["raw_score"],
+                                             "reasons": m["reasons"], "chat_words": m["chat_words"], "flags": m["flags"],
+                                             "speech": m.get("speech"), "rank": 0}))
     for rank, m in enumerate(db.rows("moments", "video_id=?", (video_id,), order="score DESC, t"), 1):
         db.update("moments", m["id"], {"rank": rank})
+    _set_video(video_id, stage="Grabbing moment thumbnails", progress=0.92)
+    progress(0.92, "Grabbing moment thumbnails")
+    for mid in new_ids:
+        m = db.get("moments", mid)
+        if m:
+            th = thumbs.moment_thumbnail(video, mid, m["t"])
+            if th:
+                db.update("moments", mid, {"thumb": str(th)})
     ranges = merge_ranges(video.get("scanned_ranges") or [], (start, end))
     total = db.execute("SELECT COUNT(*) c FROM moments WHERE video_id=?", (video_id,)).fetchone()["c"]
     summary.update({"moments": total, "signals_used": list(sig)})
@@ -280,9 +315,27 @@ def scan_video(video_id: int, progress, window=None) -> None:
     if not moments:
         _set_video(video_id, status="done", stage=f"Scanned {label}: no strong moments" + ("" if covered else " · more of the VOD can be scanned"))
         return
-    top = int(settings.get("auto_render_top", 4))
-    for m in db.rows("moments", "id IN (" + ",".join("?" * len(new_ids)) + ")", tuple(new_ids), order="score DESC")[:top]:
+    top = int(settings.get("auto_render_top", 1))
+    rendered = 0
+    for m in db.rows("moments", "id IN (" + ",".join("?" * len(new_ids)) + ")", tuple(new_ids), order="score DESC"):
+        if rendered >= top:
+            break
+        if m.get("flags"):
+            continue
         queue_render(m["id"])
+        rendered += 1
+    if rendered == 0:
+        _set_video(video_id, status="done", stage=stage + " · nothing auto-rendered (all flagged); pick one to render")
+
+
+def render_next_best(video_id: int) -> int | None:
+    """Render the highest-scoring moment that has no clip yet, preferring unflagged ones."""
+    for m in db.rows("moments", "video_id=? AND status='found'", (video_id,), order="score DESC, t"):
+        if not m.get("flags"):
+            return queue_render(m["id"])
+    for m in db.rows("moments", "video_id=? AND status='found'", (video_id,), order="score DESC, t"):
+        return queue_render(m["id"])
+    return None
 
 
 def scan_rest(video_id: int) -> int:
@@ -336,6 +389,9 @@ def render_clip(clip_id: int, progress) -> None:
     seg = d / f"seg_{clip_id}.mp4"
     db.update("clips", clip_id, {"status": "rendering", "error": None})
 
+    import time as _time
+    timings: dict = {}
+    t_mark = _time.time()
     progress(0.05, "Downloading segment")
     cut.download_segment(video["url"], video["platform"], clip["source_start"], clip["source_length"], seg,
                          on_line=lambda l: progress(None, l[:100]) if "[download]" in l else None)
@@ -346,8 +402,18 @@ def render_clip(clip_id: int, progress) -> None:
         except tools.ToolError:
             pass
 
+    timings["download_s"] = round(_time.time() - t_mark, 1); t_mark = _time.time()
     progress(0.35, "Transcribing with Whisper")
+    from . import jobs as _jobs
+    _jobs.check_cancelled()
     words = cut.transcribe(seg, settings["whisper_model"])
+    _jobs.check_cancelled()
+    timings["transcribe_s"] = round(_time.time() - t_mark, 1); t_mark = _time.time()
+    seg_len = max(1.0, tools.media_duration(seg))
+    wpm = len(words) / seg_len * 60
+    flags = []
+    if wpm < float(settings.get("min_words_per_min", 20)):
+        flags.append("low_speech")
     ass = d / f"seg_{clip_id}.ass"
     cut.write_ass(cut.group_captions(words), campaign["creator"], ass, censor=bool(settings.get("censor_captions")))
 
@@ -356,6 +422,7 @@ def render_clip(clip_id: int, progress) -> None:
     layout = (source or {}).get("layout") or ("stacked" if facecam else "full")
     out = config.CLIPS / f"{key}_{clip_id}.mp4"
     cut.render(seg, out, facecam, layout, ass, cam_fraction=float(settings.get("facecam_fraction", 0.32)))
+    timings["render_s"] = round(_time.time() - t_mark, 1)
     duration = tools.media_duration(out)
     w, h = tools.media_size(out)
     thumb = config.FRAMES / f"clip_{clip_id}.jpg"
@@ -377,13 +444,18 @@ def render_clip(clip_id: int, progress) -> None:
         "transcript": words, "hook": hook, "title": post_text.get("youtube", {}).get("title", hook),
         "hashtags": cap.build_hashtags(campaign, chat_words, "tiktok"), "post_text": post_text,
         "trim_start": 0.0, "trim_end": trim_end, "status": "pending", "watermark": 0, "ai_text": 0,
+        "speech_wpm": round(wpm, 1), "flags": flags, "timings": timings,
     }
     db.update("clips", clip_id, fields)
     clip = db.get("clips", clip_id)
     clip["duration"] = trim_end - 0.0
     db.update("clips", clip_id, {"rule_results": rules.validate_clip(clip, campaign, video)})
     if moment:
-        db.update("moments", moment["id"], {"status": "rendered"})
+        mflags = sorted(set((moment.get("flags") or []) + flags))
+        reasons = list(moment.get("reasons") or [])
+        if "low_speech" in flags and not any(r.startswith("Low speech") for r in reasons):
+            reasons.append(f"Low speech: {wpm:.0f} words/min in the transcript (likely AFK or quiet)")
+        db.update("moments", moment["id"], {"status": "rendered", "flags": mflags, "reasons": reasons})
     if not settings.get("keep_segments"):
         seg.unlink(missing_ok=True)
         ass.unlink(missing_ok=True)
@@ -504,11 +576,21 @@ def check_sources(progress, campaign_id: int | None = None) -> None:
 
 
 def cancel_video_jobs(video_id: int) -> None:
-    db.execute("UPDATE jobs SET status='cancelled', message='Video deleted' WHERE status='queued' AND type='scan_video' AND payload LIKE ?",
-               (f'%"video_id": {video_id}%',))
+    from . import jobs
+    for j in db.rows("jobs", "status IN ('queued','running') AND type='scan_video' AND payload LIKE ?", (f'%"video_id": {video_id}%',)):
+        jobs.cancel(j["id"])
     for c in db.rows("clips", "video_id=?", (video_id,)):
-        db.execute("UPDATE jobs SET status='cancelled', message='Clip deleted' WHERE status='queued' AND type IN ('render_clip','finalize_clip') AND payload LIKE ?",
-                   (f'%"clip_id": {c["id"]}%',))
+        cancel_clip_jobs(c["id"])
+
+
+def cancel_clip_jobs(clip_id: int) -> int:
+    from . import jobs
+    n = 0
+    for j in db.rows("jobs", "status IN ('queued','running') AND type IN ('render_clip','finalize_clip') AND payload LIKE ?",
+                     (f'%"clip_id": {clip_id}%',)):
+        if jobs.cancel(j["id"]):
+            n += 1
+    return n
 
 
 def clip_public(clip: dict) -> dict:

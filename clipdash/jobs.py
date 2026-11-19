@@ -7,8 +7,9 @@ import time
 import traceback
 from typing import Callable
 
-from . import db
+from . import db, tools
 
+_cancelled: set[int] = set()
 _workers: list[threading.Thread] = []
 _stop = threading.Event()
 _wake = threading.Event()
@@ -48,16 +49,60 @@ def _run(job: dict) -> None:
             db.update("jobs", jid, fields)
 
     handler = HANDLERS.get(job["type"])
+    tools.set_current_job(jid)
     try:
         if handler is None:
             raise RuntimeError(f"Unknown job type {job['type']}")
         handler(job["payload"], progress)
+        if jid in _cancelled:
+            raise tools.Cancelled("cancelled")
         db.update("jobs", jid, {"status": "done", "progress": 1.0, "finished_at": db.now()})
+    except tools.Cancelled:
+        _cancelled.discard(jid)
+        db.update("jobs", jid, {"status": "cancelled", "message": "Cancelled", "finished_at": db.now()})
+        _on_cancel(job)
     except Exception as e:  # noqa: BLE001
         err = f"{type(e).__name__}: {e}"
         db.update("jobs", jid, {"status": "error", "error": err[:4000], "finished_at": db.now()})
         _on_error(job, err)
         traceback.print_exc()
+
+
+def _on_cancel(job: dict) -> None:
+    p = job["payload"]
+    if job["type"] == "render_clip" and p.get("clip_id"):
+        clip = db.get("clips", p["clip_id"])
+        if clip and clip["status"] == "rendering":
+            if clip.get("moment_id"):
+                db.update("moments", clip["moment_id"], {"status": "found"})
+            db.delete("clips", clip["id"])
+    elif job["type"] == "scan_video" and p.get("video_id"):
+        v = db.get("videos", p["video_id"])
+        if v and v["status"] in ("scanning", "queued"):
+            db.update("videos", v["id"], {"status": "done" if v.get("scanned_ranges") else "error", "stage": "Scan cancelled"})
+
+
+def cancel(job_id: int) -> bool:
+    """Cancel a queued or running job. Running jobs get their child process killed; pure-Python steps
+    (Whisper) finish their current step and then stop."""
+    job = db.get("jobs", job_id)
+    if not job:
+        return False
+    if job["status"] == "queued":
+        db.update("jobs", job_id, {"status": "cancelled", "message": "Cancelled", "finished_at": db.now()})
+        _on_cancel(job)
+        return True
+    if job["status"] == "running":
+        _cancelled.add(job_id)
+        tools.kill_job_processes(job_id)
+        return True
+    return False
+
+
+def check_cancelled() -> None:
+    jid = getattr(tools._current, "job_id", None)
+    if jid is not None and jid in _cancelled:
+        raise tools.Cancelled("cancelled")
 
 
 def _on_error(job: dict, err: str) -> None:
@@ -93,6 +138,7 @@ def _worker(name: str) -> None:
             _wake.clear()
             continue
         _run(job)
+        tools.set_current_job(None)
 
 
 def start(n_workers: int = 2) -> None:
@@ -106,6 +152,7 @@ def start(n_workers: int = 2) -> None:
 def stop() -> None:
     _stop.set()
     _wake.set()
+    tools.kill_all_processes()
 
 
 def retry(job_id: int) -> None:

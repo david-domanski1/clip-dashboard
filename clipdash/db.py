@@ -91,8 +91,8 @@ JSON_COLS = {
     "campaigns": {"required_names", "required_hashtags", "platforms", "checklist"},
     "sources": {"facecam"},
     "videos": {"signals", "scanned_ranges", "scan_window"},
-    "moments": {"reasons", "chat_words"},
-    "clips": {"transcript", "hashtags", "post_text", "checklist", "rule_results"},
+    "moments": {"reasons", "chat_words", "flags"},
+    "clips": {"transcript", "hashtags", "post_text", "checklist", "rule_results", "flags", "timings"},
     "accounts": {"meta", "campaign_ids"},
     "posts": {"options", "log"},
     "jobs": {"payload"},
@@ -117,6 +117,8 @@ def conn() -> sqlite3.Connection:
 
 
 MIGRATIONS = {
+    "moments": [("thumb", "TEXT"), ("flags", "TEXT NOT NULL DEFAULT '[]'"), ("raw_score", "REAL"), ("speech", "REAL")],
+    "clips": [("speech_wpm", "REAL"), ("flags", "TEXT NOT NULL DEFAULT '[]'"), ("timings", "TEXT NOT NULL DEFAULT '{}'")],
     "videos": [("scan_start", "REAL"), ("scan_end", "REAL"), ("scanned_ranges", "TEXT NOT NULL DEFAULT '[]'"),
                ("override", "INTEGER NOT NULL DEFAULT 0"), ("live", "INTEGER NOT NULL DEFAULT 0"),
                ("scan_window", "TEXT NOT NULL DEFAULT '{}'")],
