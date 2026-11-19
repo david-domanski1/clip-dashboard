@@ -158,6 +158,9 @@ CLIPDASH_E2E=1 .venv/bin/python -m pytest tests/test_e2e_smoke.py   # scans and 
 Tests never post to real accounts: publishers run in dry-run mode under test, and *Dry run* can also be
 switched on in Settings for manual testing.
 
+Before pushing, `.venv/bin/python scripts/secret_scan.py` checks the tree for credentials. To run it on every
+push automatically: `printf '#!/bin/sh\n.venv/bin/python scripts/secret_scan.py\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push`.
+
 ## Troubleshooting
 
 - **"Python not found"** – install from python.org, tick *Add to PATH*, run the installer again.
