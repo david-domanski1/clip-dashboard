@@ -70,8 +70,9 @@ First launch shows **Setup**:
    2 minutes) and the whole video otherwise; *Last 6 hours*, *Whole video* and *Custom start/end* are there too.
    A stream that is still live works: the latest window of the growing VOD is scanned. After a windowed scan,
    **Scan the rest** continues in 2-hour chunks in the background, merging moments and skipping ranges already
-   scanned. Videos published before the campaign's footage start date are marked *outside campaign window* and
-   not scanned (channel watching does the same); *Scan anyway* overrides for one video. The first scan also loads
+   scanned. Videos published before the campaign's footage start date are skipped silently at add/watch time
+   (logged, not listed); a *Show skipped (N)* toggle at the bottom of the Pipeline reveals them with a
+   *Scan anyway* override. The first scan also loads
    the Whisper model, which takes a minute.
    After a scan the video shows its **ranked moments**: timestamp, score, why it was picked, the top chat words
    and a thumbnail. Only the single best moment is rendered automatically (Settings → *auto-render top N*,

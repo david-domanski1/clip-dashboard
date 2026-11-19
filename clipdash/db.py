@@ -138,6 +138,7 @@ def init() -> None:
         for name, decl in cols:
             if name not in have:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    c.execute("UPDATE videos SET status='skipped' WHERE status!='skipped' AND stage LIKE 'Outside campaign window%'")
     ensure_workspace()
 
 

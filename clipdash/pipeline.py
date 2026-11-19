@@ -3,6 +3,7 @@ finalize (trim), watch sources for new videos. Each step reports progress into t
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 from . import captions as cap
 from . import chat, config, cut, db, disk, narration, rules, signals, sources, speech, thumbs, tools, tts
 
+log = logging.getLogger("clipdash.pipeline")
 CHUNK_S = 2 * 3600          # "Scan the rest" works in 2-hour chunks
 LONG_VOD_S = 4 * 3600       # VODs longer than this default to the last 2 hours
 LAST_2H = {"kind": "last", "hours": 2}
@@ -165,6 +167,7 @@ def scan_video(video_id: int, progress, window=None) -> None:
     # Campaign footage window applies to the whole video, before any download.
     reason = outside_campaign_window(campaign, video.get("published_at"))
     if reason and not video.get("override"):
+        log.info("Skipped %s (%s): %s", video["url"], video.get("title"), reason)
         _set_video(video_id, status="skipped", stage=reason, progress=1.0)
         progress(1.0, reason)
         return
@@ -613,7 +616,8 @@ def check_sources(progress, campaign_id: int | None = None) -> None:
             pub = rules._parse_dt(v.get("published_at"))
             if reason or (pub and not campaign.get("source_start") and pub < recent_floor):
                 row.update({"status": "skipped", "stage": reason or "Older than 3 days (no campaign start date set)"})
-                db.insert("videos", row)
+                log.info("Skipped %s (%s): %s", v["url"], v.get("title"), row["stage"])
+                db.insert("videos", row)   # kept out of the Pipeline list; visible under 'Show skipped' with an override
                 continue
             if added >= 3:
                 break

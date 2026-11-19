@@ -358,9 +358,7 @@ def source_recent(sid: int):
 
 # ------------------------------------------------------------------ videos & moments
 
-@app.get("/api/videos")
-def list_videos(campaign_id: int | None = None):
-    where, params = ("campaign_id=?", (campaign_id,)) if campaign_id else ("1=1", ())
+def _video_rows(where: str, params: tuple) -> list[dict]:
     out = []
     for v in db.rows("videos", where, params, order="id DESC"):
         v["unscanned"] = pipeline.unscanned_chunks(v.get("scanned_ranges") or [], float(v["duration"])) if v.get("duration") else []
@@ -369,6 +367,24 @@ def list_videos(campaign_id: int | None = None):
         v["moment_count"] = db.execute("SELECT COUNT(*) c FROM moments WHERE video_id=?", (v["id"],)).fetchone()["c"]
         out.append(v)
     return out
+
+
+@app.get("/api/videos")
+def list_videos(campaign_id: int | None = None):
+    """Pipeline entries. Videos outside the campaign's footage window are not listed here (see /api/videos/skipped)."""
+    where, params = ("status!='skipped'", ())
+    if campaign_id:
+        where, params = ("campaign_id=? AND status!='skipped'", (campaign_id,))
+    return _video_rows(where, params)
+
+
+@app.get("/api/videos/skipped")
+def list_skipped_videos(campaign_id: int | None = None):
+    """Videos skipped at add/watch time (outside the campaign window). Revealed by the Pipeline's 'Show skipped' toggle."""
+    where, params = ("status='skipped'", ())
+    if campaign_id:
+        where, params = ("campaign_id=? AND status='skipped'", (campaign_id,))
+    return _video_rows(where, params)
 
 
 @app.post("/api/videos")

@@ -345,17 +345,20 @@ function wireWindow(root, id) { $(`[data-win="${id}"]`, root).onchange = (e) => 
 VIEWS.videos = async (el, arg) => {
   const c = campaign();
   if (!c) { el.innerHTML = noCampaign(); return; }
-  const vids = await get(`/api/videos?campaign_id=${c.id}`);
+  const [vids, skipped] = await Promise.all([get(`/api/videos?campaign_id=${c.id}`), get(`/api/videos/skipped?campaign_id=${c.id}`)]);
   el.innerHTML = `
     <div class="row between"><div><h1>Pipeline · ${esc(c.name)}</h1><p class="sub">Each video: scan a time window for moments → render clips → review. Long VODs default to their last 2 hours (clips in about 2 minutes); "Scan the rest" continues in 2-hour chunks in the background.</p></div></div>
     <div class="panel"><div class="row"><input type="text" id="v-url" placeholder="Paste a YouTube or Twitch video URL (a stream still in progress works too)" style="flex:1;min-width:300px">${windowControls('new')}<button class="btn primary" id="v-add">Scan</button></div>
       <div class="small muted" style="margin-top:6px">Videos published before the campaign's footage start (${esc((c.source_start || 'not set').slice(0, 10))}) are skipped unless you override.</div></div>
-    <div class="panel" id="v-list" style="margin-top:14px">${vids.length ? '' : '<div class="empty">No videos yet. Paste a URL above or add a source.</div>'}</div>`;
+    <div class="panel" id="v-list" style="margin-top:14px">${vids.length ? '' : '<div class="empty">No videos yet. Paste a URL above or add a source.</div>'}</div>
+    ${skipped.length ? `<div style="margin-top:10px"><button class="btn sm ghost" id="v-toggle-skipped">${S.showSkipped ? 'Hide' : 'Show'} skipped (${skipped.length})</button>
+      <div class="panel ${S.showSkipped ? '' : 'hidden'}" id="v-skipped" style="margin-top:8px"><div class="small muted" style="margin-bottom:6px">Published outside the campaign's footage window, so not scanned. "Scan anyway" overrides for that video.</div></div></div>` : ''}`;
   wireWindow(el, 'new');
+  const tog = $('#v-toggle-skipped'); if (tog) tog.onclick = () => { S.showSkipped = !S.showSkipped; render(); };
   const add = async () => { const w = readWindow(el, 'new'); if (w === null) return; const ok = !c.workspace || confirm('Does this creator publicly allow clipping (a !clipping program or clip-friendly terms)? Only continue if yes.'); if (!ok) return; try { await post('/api/videos', { campaign_id: c.id, url: $('#v-url').value.trim(), window: w, clip_terms_ok: ok }); $('#v-url').value = ''; toast('Queued for scanning'); render(); } catch (e) { toastErr(e); } };
   $('#v-add').onclick = add; $('#v-url').onkeydown = (e) => { if (e.key === 'Enter') add(); };
   const list = $('#v-list');
-  for (const v of vids) {
+  const renderVideo = (v, container) => {
     const d = document.createElement('div'); d.className = 'video-row';
     const cc = v.clip_counts || {};
     const ranges = (v.scanned_ranges || []).map(([s, e]) => `${fmtTime(s)}–${fmtTime(e)}`).join(', ');
@@ -407,8 +410,10 @@ VIEWS.videos = async (el, arg) => {
     const showBtn = $('[data-show]', d);
     if (showBtn) showBtn.onclick = () => { if (momentsBox.innerHTML) momentsBox.innerHTML = ''; else loadMoments(); };
     if (v.moment_count && (S.openMoments === v.id || vids.length <= 3)) loadMoments();
-    list.appendChild(d);
-  }
+    container.appendChild(d);
+  };
+  for (const v of vids) renderVideo(v, list);
+  if (S.showSkipped && $('#v-skipped')) for (const v of skipped) renderVideo(v, $('#v-skipped'));
 };
 
 // ---------------------------------------------------------------- Review

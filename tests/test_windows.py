@@ -63,3 +63,28 @@ def test_add_video_gate_and_skip_then_override(fresh_db, campaign, monkeypatch):
     pipeline.scan_video(v["id"], lambda f, m=None: None, window="whole")
     v = db.get("videos", v["id"])
     assert v["status"] in ("scanned", "done", "rendering") and v["scanned_ranges"] == [[0.0, 1000.0]]
+
+
+def test_skipped_videos_hidden_from_pipeline_and_revealed_by_toggle(fresh_db, campaign):
+    from fastapi.testclient import TestClient
+    from clipdash import db
+    from clipdash.app import app
+    ok = db.insert("videos", {"campaign_id": campaign["id"], "platform": "twitch", "external_id": "1", "url": "u1", "status": "done",
+                              "published_at": "2026-11-19T00:00:00+00:00"})
+    old = db.insert("videos", {"campaign_id": campaign["id"], "platform": "twitch", "external_id": "2", "url": "u2", "status": "skipped",
+                               "stage": "Outside campaign window: published 2026-11-11, campaign footage starts 2026-11-18",
+                               "published_at": "2026-11-11T00:00:00+00:00"})
+    legacy = db.insert("videos", {"campaign_id": campaign["id"], "platform": "twitch", "external_id": "3", "url": "u3", "status": "error",
+                                  "stage": "Outside campaign window: published 2026-11-15, campaign footage starts 2026-11-18"})
+    db.init()  # upgrade: legacy outside-window rows become skipped
+    with TestClient(app) as c:
+        listed = [v["id"] for v in c.get(f"/api/videos?campaign_id={campaign['id']}").json()]
+        assert listed == [ok]
+        skipped = c.get(f"/api/videos/skipped?campaign_id={campaign['id']}").json()
+        assert {v["id"] for v in skipped} == {old, legacy}
+        assert all(v["status"] == "skipped" for v in skipped)
+        import clipdash.jobs
+        clipdash.jobs.enqueue = lambda *a, **k: 1
+        r = c.post(f"/api/videos/{old}/rescan", json={"window": "last2h", "override": True})
+        assert r.status_code == 200 and db.get("videos", old)["status"] == "queued" and db.get("videos", old)["override"] == 1
+        assert old in [v["id"] for v in c.get(f"/api/videos?campaign_id={campaign['id']}").json()]
