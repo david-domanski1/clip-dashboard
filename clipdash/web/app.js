@@ -143,7 +143,8 @@ function openCampaignEditor(c = null) {
     <div class="modal-head"><h2 style="margin:0">${c ? 'Edit campaign' : 'New campaign'}</h2><button class="btn ghost" onclick="closeModal()">✕</button></div>
     ${c ? '' : `<div class="panel" style="margin-bottom:14px"><div class="field"><label>Paste the campaign URL or its rules text; the fields below get pre-filled (check every one)</label>
       <div class="row"><input type="text" id="c-url" placeholder="https://reachclipping.com/LACYGTA"><button class="btn" id="c-parse">Read page</button></div>
-      <textarea id="c-rules" placeholder="…or paste the rules here"></textarea><button class="btn sm" id="c-parse-text" style="align-self:flex-start">Pre-fill from text</button></div></div>`}
+      <textarea id="c-rules" placeholder="…or paste the rules here"></textarea><button class="btn sm" id="c-parse-text" style="align-self:flex-start">Pre-fill from text</button>
+      <div id="c-note" class="callout hidden"></div></div></div>`}
     <div class="form-grid">
       <div class="field"><label>Campaign name</label><input id="f-name" type="text" value="${v('name')}"></div>
       <div class="field"><label>Creator (the streamer)</label><input id="f-creator" type="text" value="${v('creator')}"></div>
@@ -177,14 +178,18 @@ function openCampaignEditor(c = null) {
     const set = (id, val) => { if (val !== undefined && val !== null && val !== '') $(id, m).value = Array.isArray(val) ? val.join(', ') : val; };
     set('#f-creator', f.creator); set('#f-tags', f.required_hashtags); set('#f-submit', f.submit_minutes); set('#f-rate', f.rate_per_1k);
     set('#f-cap', f.per_clip_cap); set('#f-pool', f.pool_budget); set('#f-mv', f.min_views); set('#f-start', f.source_start); set('#f-url', f.url);
-    set('#f-min', f.min_len); set('#f-rules', f.rules_text);
+    set('#f-min', f.min_len); set('#f-rules', f.rules_text); set('#f-name', f.name); set('#f-sub', f.submission_url);
+    if (f.required_hashtags && !f.required_hashtags.length) $('#f-tags', m).value = '';
+    const note = $('#c-note', m); if (note) { note.classList.toggle('hidden', !f.note); note.textContent = f.note || ''; }
+    if (f.rules_locked) { $('#f-tags', m).value = ''; $('#f-start', m).value = ''; $('#f-tags', m).placeholder = 'paste the rules after joining'; $('#f-start', m).placeholder = 'paste the rules after joining'; }
     if (f.pay_model) $('#f-pay', m).value = f.pay_model;
     if (f.watermark_allowed !== undefined) $('#f-wm', m).value = String(f.watermark_allowed);
     if (f.bans_ai) { $('#f-bans', m).checked = true; $('#f-bans', m).onchange({ target: $('#f-bans', m) }); }
     if (f.creator && !$('#f-name', m).value) $('#f-name', m).value = f.creator + ' campaign';
+    if (f.required_names) $('#f-names', m).value = f.required_names.join(', ');
     if (f.creator && !$('#f-names', m).value) $('#f-names', m).value = f.creator;
     if (f.platforms) $$('#f-plats .chip', m).forEach((ch) => ch.classList.toggle('on', f.platforms.includes(ch.dataset.p)));
-    toast('Pre-filled. Check every field against the campaign page.');
+    toast(f.rules_locked ? 'Page read, but its rules are only visible after joining.' : 'Pre-filled. Check every field against the campaign page.', f.rules_locked ? 'warn' : '');
   };
   if (!c) {
     $('#c-parse', m).onclick = async () => { try { const r = await post('/api/campaigns/parse', { url: $('#c-url', m).value }); if (r.error) toast(r.error, 'warn'); fill(r.fields); } catch (e) { toastErr(e); } };

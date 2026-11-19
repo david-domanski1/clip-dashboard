@@ -124,9 +124,13 @@ def parse_rules_text(text: str) -> dict:
     """Best-effort extraction of rule fields from pasted campaign rules. Everything stays editable."""
     out: dict = {}
     t = text or ""
-    if m := re.search(r"#([A-Za-z0-9_]+)", t):
-        out["required_hashtags"] = sorted({"#" + x for x in re.findall(r"#([A-Za-z0-9_]{2,})", t)})[:3]
-        out.setdefault("creator", m.group(1))
+    from .campaign_import import HEX_LIKE, safe_hashtags
+    tags = safe_hashtags(t)
+    if tags:
+        out["required_hashtags"] = tags
+        first = tags[0].lstrip("#")
+        if not HEX_LIKE.match(first):
+            out.setdefault("creator", first)
     if m := re.search(r"(\d+)\s*(?:min(?:ute)?s?)\s*(?:of|after)\s*posting", t, re.I):
         out["submit_minutes"] = int(m.group(1))
     if m := re.search(r"\$\s?(\d+(?:\.\d+)?)\s*(?:per|/)\s*(?:1,?000|1k|thousand)\s*views", t, re.I):

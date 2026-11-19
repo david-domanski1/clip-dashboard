@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -231,22 +232,25 @@ def _creator_campaign_conflict(cid: int, info: dict, p: dict) -> dict | None:
 
 @app.post("/api/campaigns/parse")
 def parse_campaign(body: dict):
+    """Pre-fill campaign fields from a campaign page URL or pasted rules text. Scripts and styles are never read."""
+    from . import campaign_import
     text = body.get("text") or ""
     url = (body.get("url") or "").strip()
-    fetched = ""
     if url and not text:
         try:
             import requests
-            r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-            import re
-            fetched = re.sub(r"<[^>]+>", " ", r.text)
-            fetched = re.sub(r"\s+", " ", fetched)
+            r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (compatible; ClipDashboard)"})
+            r.raise_for_status()
         except Exception as e:  # noqa: BLE001
-            return {"fields": {}, "error": f"Could not fetch the page: {e}. Paste the rules text instead."}
-    parsed = rules.parse_rules_text(text or fetched)
+            return {"fields": {"url": url, "submission_url": url}, "error": f"Could not fetch the page: {e}. Paste the rules text instead."}
+        return {"fields": campaign_import.fields_from_page(r.text, url)}
+    if "<" in text and re.search(r"<(html|body|div|script|p)\b", text, re.I):
+        text = campaign_import.extract_page(text)["text"]
+    parsed = rules.parse_rules_text(text)
     if url:
         parsed["url"] = url
-    parsed["rules_text"] = text or fetched[:5000]
+        parsed.setdefault("submission_url", url)
+    parsed["rules_text"] = text[:5000]
     return {"fields": parsed}
 
 

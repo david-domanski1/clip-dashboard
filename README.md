@@ -60,8 +60,11 @@ First launch shows **Setup**:
 ## Make your first clip (about 10 minutes)
 
 1. **Overview → New campaign.** Paste the campaign URL and click *Read page*, or paste the rules text and
-   *Pre-fill*. Check every field against the campaign page, especially the required hashtag, minimum
-   length (61 s by default), footage start date, submission URL and deadline. Save.
+   *Pre-fill*. The importer reads the page title, Open Graph tags and visible text only (never scripts or
+   styles), fills creator, name, pool/rate, platforms and uses the page as the submission URL. Whop Content
+   Rewards pages hide the rules until you join: the form says so and leaves hashtag, name and date fields empty
+   until you paste the rules. Check every field against the campaign page, especially the required hashtag,
+   minimum length (61 s by default), footage start date, submission URL and deadline. Save.
 2. **Pipeline → paste a video URL → Scan.** Pick a scan window first: *Auto* scans the last 2 hours of any VOD
    longer than 4 hours (a 2-hour window of Twitch chat downloads in seconds, so clips are reviewable in about
    2 minutes) and the whole video otherwise; *Last 6 hours*, *Whole video* and *Custom start/end* are there too.
