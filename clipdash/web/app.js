@@ -305,36 +305,58 @@ function openFacecamPicker(s) {
 }
 
 // ---------------------------------------------------------------- Pipeline (videos)
+const WINDOWS = [['auto', 'Auto (last 2 h for VODs over 4 h)'], ['last2h', 'Last 2 hours'], ['last6h', 'Last 6 hours'], ['whole', 'Whole video'], ['custom', 'Custom start / end']];
+const parseHms = (s) => { const p = String(s || '').trim().split(':').map(Number); if (!p.length || p.some(isNaN)) return null; return p.reduce((a, b) => a * 60 + b, 0); };
+function windowControls(id, sel = 'auto') {
+  return `<select data-win="${id}" style="width:auto">${WINDOWS.map(([k, l]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <span class="row hidden" data-custom="${id}"><input type="text" placeholder="start hh:mm:ss" style="width:120px" data-ws="${id}"><input type="text" placeholder="end hh:mm:ss" style="width:120px" data-we="${id}"></span>`;
+}
+function readWindow(root, id) {
+  const sel = $(`[data-win="${id}"]`, root).value;
+  if (sel !== 'custom') return sel;
+  const start = parseHms($(`[data-ws="${id}"]`, root).value) || 0, end = parseHms($(`[data-we="${id}"]`, root).value);
+  if (end == null) { toast('Enter the window end as hh:mm:ss', 'warn'); return null; }
+  return { start, end };
+}
+function wireWindow(root, id) { $(`[data-win="${id}"]`, root).onchange = (e) => $(`[data-custom="${id}"]`, root).classList.toggle('hidden', e.target.value !== 'custom'); }
+
 VIEWS.videos = async (el, arg) => {
   const c = campaign();
   if (!c) { el.innerHTML = noCampaign(); return; }
   const vids = await get(`/api/videos?campaign_id=${c.id}`);
   el.innerHTML = `
-    <div class="row between"><div><h1>Pipeline · ${esc(c.name)}</h1><p class="sub">Each video: scan for moments → render clips → review. Jobs run in the background and resume after a restart.</p></div>
-      <div class="row"><input type="text" id="v-url" placeholder="Paste a YouTube or Twitch video URL" style="width:360px"><button class="btn primary" id="v-add">Scan video</button></div></div>
-    <div class="panel" id="v-list">${vids.length ? '' : '<div class="empty">No videos yet. Paste a URL above or add a source.</div>'}</div>`;
-  const add = async () => { try { await post('/api/videos', { campaign_id: c.id, url: $('#v-url').value.trim() }); $('#v-url').value = ''; toast('Queued for scanning'); render(); } catch (e) { toastErr(e); } };
+    <div class="row between"><div><h1>Pipeline · ${esc(c.name)}</h1><p class="sub">Each video: scan a time window for moments → render clips → review. Long VODs default to their last 2 hours (clips in about 2 minutes); "Scan the rest" continues in 2-hour chunks in the background.</p></div></div>
+    <div class="panel"><div class="row"><input type="text" id="v-url" placeholder="Paste a YouTube or Twitch video URL (a stream still in progress works too)" style="flex:1;min-width:300px">${windowControls('new')}<button class="btn primary" id="v-add">Scan</button></div>
+      <div class="small muted" style="margin-top:6px">Videos published before the campaign's footage start (${esc((c.source_start || 'not set').slice(0, 10))}) are skipped unless you override.</div></div>
+    <div class="panel" id="v-list" style="margin-top:14px">${vids.length ? '' : '<div class="empty">No videos yet. Paste a URL above or add a source.</div>'}</div>`;
+  wireWindow(el, 'new');
+  const add = async () => { const w = readWindow(el, 'new'); if (w === null) return; try { await post('/api/videos', { campaign_id: c.id, url: $('#v-url').value.trim(), window: w }); $('#v-url').value = ''; toast('Queued for scanning'); render(); } catch (e) { toastErr(e); } };
   $('#v-add').onclick = add; $('#v-url').onkeydown = (e) => { if (e.key === 'Enter') add(); };
   const list = $('#v-list');
   for (const v of vids) {
     const d = document.createElement('div'); d.className = 'video-row';
     const cc = v.clip_counts || {};
+    const ranges = (v.scanned_ranges || []).map(([s, e]) => `${fmtTime(s)}–${fmtTime(e)}`).join(', ');
+    const busy = ['scanning', 'queued'].includes(v.status);
     d.innerHTML = `
       <div>
-        <div class="row"><b>${esc(v.title || v.url)}</b> <span class="badge ${v.status}">${v.status}</span> ${v.is_stream ? '<span class="badge">stream VOD</span>' : ''} ${v.platform === 'twitch' ? '<span class="badge">twitch</span>' : ''}</div>
+        <div class="row"><b>${esc(v.title || v.url)}</b> <span class="badge ${v.status}">${v.status === 'skipped' ? 'outside campaign window' : v.status}</span> ${v.live ? '<span class="badge pink">live now</span>' : (v.is_stream ? '<span class="badge">stream VOD</span>' : '')} ${v.platform === 'twitch' ? '<span class="badge">twitch</span>' : ''}</div>
         <div class="small muted"><a href="${esc(v.url)}" target="_blank">${esc(v.url)}</a> · ${v.channel ? esc(v.channel) + ' · ' : ''}${v.duration ? fmtTime(v.duration) : ''} ${v.published_at ? '· published ' + fmtDate(v.published_at) : ''}</div>
-        <div class="small" style="margin-top:6px">${esc(v.stage || '')}${v.error ? ` <span class="bad-text">${esc(v.error.slice(0, 240))}</span>` : ''}</div>
-        ${['scanning', 'queued', 'rendering'].includes(v.status) ? `<div class="progress" style="margin-top:6px;max-width:420px"><i style="width:${Math.round((v.progress || 0) * 100)}%"></i></div>` : ''}
-        <div class="small muted" style="margin-top:6px">${v.moment_count} moments${v.signals.signals_used ? ' from ' + v.signals.signals_used.join(' + ') : ''}${v.signals.chat_messages ? ` · ${fmtNum(v.signals.chat_messages)} chat messages` : ''} · clips: ${Object.entries(cc).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'}</div>
+        <div class="small" style="margin-top:6px">${esc(v.stage || '')}${v.error ? ` <span class="bad-text">${esc(v.error.slice(0, 400))}</span>` : ''}</div>
+        ${busy ? `<div class="progress" style="margin-top:6px;max-width:420px"><i style="width:${Math.round((v.progress || 0) * 100)}%"></i></div>` : ''}
+        <div class="small muted" style="margin-top:6px">${ranges ? 'scanned ' + ranges + ' · ' : ''}${v.moment_count} moments${v.signals.signals_used ? ' from ' + v.signals.signals_used.join(' + ') : ''}${v.signals.chat_messages ? ` · ${fmtNum(v.signals.chat_messages)} chat messages` : ''}${v.signals.chat_error ? ` · <span class="warn-text">chat: ${esc(v.signals.chat_error.slice(0, 120))}</span>` : ''} · clips: ${Object.entries(cc).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'}</div>
+        <div class="row" style="margin-top:8px" data-rescan-row><span class="small muted">Scan window:</span>${windowControls('v' + v.id, v.duration > 4 * 3600 ? 'last2h' : 'auto')}<button class="btn sm" data-rescan ${busy ? 'disabled' : ''}>${v.status === 'skipped' ? 'Scan anyway (override date window)' : (v.scanned_ranges?.length ? 'Scan this window' : 'Scan')}</button>
+          ${v.unscanned?.length && !busy ? `<button class="btn sm yellow" data-rest>Scan the rest (${v.unscanned.length} × 2 h, background)</button>` : ''}</div>
         <div data-moments></div>
       </div>
       <div class="row" style="align-items:flex-start">
         ${v.moment_count ? `<button class="btn sm" data-show>Moments</button>` : ''}
         ${cc.pending ? `<a class="btn sm primary" href="#/review/${v.id}">Review ${cc.pending}</a>` : ''}
-        <button class="btn sm" data-rescan ${['scanning', 'queued'].includes(v.status) ? 'disabled' : ''}>Rescan</button>
         <button class="btn sm danger" data-del>Delete</button>
       </div>`;
-    $('[data-rescan]', d).onclick = () => post(`/api/videos/${v.id}/rescan`).then(render).catch(toastErr);
+    wireWindow(d, 'v' + v.id);
+    $('[data-rescan]', d).onclick = () => { const w = readWindow(d, 'v' + v.id); if (w === null) return; post(`/api/videos/${v.id}/rescan`, { window: w, override: v.status === 'skipped' }).then(render).catch(toastErr); };
+    const rest = $('[data-rest]', d); if (rest) rest.onclick = () => post(`/api/videos/${v.id}/scan_rest`).then((r) => { toast(`${r.queued_chunks} chunks queued`); render(); }).catch(toastErr);
     $('[data-del]', d).onclick = async () => { if (await confirmDlg('Delete this video and all its clips?', 'Delete')) { await del(`/api/videos/${v.id}`); render(); } };
     const showBtn = $('[data-show]', d);
     if (showBtn) showBtn.onclick = async () => {
@@ -347,7 +369,7 @@ VIEWS.videos = async (el, arg) => {
         <a class="small" href="${esc(v.url)}${v.platform === 'youtube' ? '&t=' + Math.round(m.t) : '?t=' + Math.round(m.t) + 's'}" target="_blank">open ↗</a></div>`).join('')}
         <div class="row" style="margin-top:8px"><span class="small muted">Render at a time of your own:</span><input type="text" placeholder="hh:mm:ss" style="width:110px" data-custom-t><button class="btn sm" data-custom>Render</button></div></div>`;
       $$('[data-render]', x).forEach((b) => b.onclick = () => post(`/api/moments/${b.dataset.render}/render`).then(() => { toast('Rendering'); b.replaceWith('queued'); }).catch(toastErr));
-      $('[data-custom]', x).onclick = () => { const p = $('[data-custom-t]', x).value.split(':').map(Number); const t = p.reduce((a, b) => a * 60 + b, 0); post(`/api/videos/${v.id}/render_custom`, { t }).then(() => toast('Rendering')).catch(toastErr); };
+      $('[data-custom]', x).onclick = () => { const t = parseHms($('[data-custom-t]', x).value); if (t == null) return toast('Enter hh:mm:ss', 'warn'); post(`/api/videos/${v.id}/render_custom`, { t }).then(() => toast('Rendering')).catch(toastErr); };
     };
     list.appendChild(d);
   }

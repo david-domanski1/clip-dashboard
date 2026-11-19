@@ -112,7 +112,11 @@ def combine(signals: dict, settings: dict, bin_s: int = 10) -> np.ndarray:
     if "chat" in signals and len(signals["chat"]["intensity"]):
         parts.append(("chat", signals["chat"]["intensity"] / max(settings.get("chat_spike_factor", 3.0), 1e-6), 1.0))
     if "audio" in signals and len(signals["audio"]["db"]):
-        parts.append(("audio", np.clip(signals["audio"]["db"], 0, None) / max(settings.get("audio_spike_db", 8.0), 1e-6), 0.6))
+        a = np.clip(signals["audio"]["db"], 0, None) / max(settings.get("audio_spike_db", 8.0), 1e-6)
+        off = int(signals["audio"].get("offset_bins", 0))
+        if off:
+            a = np.concatenate([np.zeros(off), a])
+        parts.append(("audio", a, 0.6))
     if "heatmap" in signals and len(signals["heatmap"]["intensity"]):
         parts.append(("heatmap", np.clip(signals["heatmap"]["intensity"] - 1.0, 0, None), 1.0))
     if "transcript" in signals and len(signals["transcript"]["intensity"]):
@@ -126,15 +130,22 @@ def combine(signals: dict, settings: dict, bin_s: int = 10) -> np.ndarray:
     return score
 
 
-def pick_moments(score: np.ndarray, signals: dict, settings: dict, bin_s: int = 10) -> list[dict]:
-    """Greedy non-overlapping selection of the highest-scoring bins, with reasons per moment."""
+def pick_moments(score: np.ndarray, signals: dict, settings: dict, bin_s: int = 10,
+                 t_min: float = 0.0, t_max: float | None = None) -> list[dict]:
+    """Greedy non-overlapping selection of the highest-scoring bins inside [t_min, t_max], with reasons per moment.
+    The stream-start flood (skip_start) is only ignored when the window starts at the beginning."""
     if len(score) == 0:
         return []
     score = score.copy()
+    if t_min > 0:
+        score[: int(t_min // bin_s)] = 0
+    if t_max is not None:
+        score[int(t_max // bin_s) + 1:] = 0
     n_signals = sum(1 for k in ("chat", "audio", "heatmap", "transcript")
                     if k in signals and len(signals[k].get("intensity", signals[k].get("db", []))))
     cutoff = 1.5 if n_signals >= 2 else 1.0
-    score[: int(settings.get("skip_start", 120) // bin_s)] = 0
+    if t_min <= 0:
+        score[: int(settings.get("skip_start", 120) // bin_s)] = 0
     min_gap = settings.get("min_gap", 90)
     max_moments = settings.get("max_moments", 12)
     chosen: list[dict] = []
@@ -162,8 +173,10 @@ def explain(i: int, signals: dict) -> list[str]:
                 s += f", {int(hf * 100)}% hype words"
             out.append(s)
     au = signals.get("audio")
-    if au is not None and i < len(au.get("db", [])) and float(au["db"][i]) >= 4:
-        out.append(f"Audio +{float(au['db'][i]):.0f} dB louder than usual")
+    if au is not None:
+        j = i - int(au.get("offset_bins", 0))
+        if 0 <= j < len(au.get("db", [])) and float(au["db"][j]) >= 4:
+            out.append(f"Audio +{float(au['db'][j]):.0f} dB louder than usual")
     hm = signals.get("heatmap")
     if hm is not None and i < len(hm.get("intensity", [])) and float(hm["intensity"][i]) >= 1.5:
         out.append(f"YouTube 'most replayed' {float(hm['intensity'][i]):.1f}× the video's median")

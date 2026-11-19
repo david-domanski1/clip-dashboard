@@ -68,6 +68,9 @@ def _on_error(job: dict, err: str) -> None:
     elif job["type"] == "render_clip" and p.get("clip_id"):
         clip = db.get("clips", p["clip_id"])
         if clip:
+            from . import config
+            for stub in (config.CACHE).glob(f"*/seg_{clip['id']}.*"):
+                stub.unlink(missing_ok=True)  # never reuse a half-downloaded segment on retry
             db.update("clips", clip["id"], {"status": "error", "error": err[:1000]})
             remaining = db.execute("SELECT COUNT(*) c FROM clips WHERE video_id=? AND status='rendering'", (clip["video_id"],)).fetchone()["c"]
             if remaining == 0:
@@ -114,7 +117,7 @@ def register_handlers() -> None:
     from . import pipeline, tools
     from .publish import runner
 
-    HANDLERS["scan_video"] = lambda p, pr: pipeline.scan_video(p["video_id"], pr)
+    HANDLERS["scan_video"] = lambda p, pr: pipeline.scan_video(p["video_id"], pr, p.get("window"))
     HANDLERS["render_clip"] = lambda p, pr: pipeline.render_clip(p["clip_id"], pr)
     HANDLERS["finalize_clip"] = lambda p, pr: pipeline.finalize_clip(p["clip_id"], pr)
     HANDLERS["check_sources"] = lambda p, pr: pipeline.check_sources(pr, p.get("campaign_id"))

@@ -62,8 +62,14 @@ First launch shows **Setup**:
 1. **Overview → New campaign.** Paste the campaign URL and click *Read page*, or paste the rules text and
    *Pre-fill*. Check every field against the campaign page, especially the required hashtag, minimum
    length (61 s by default), footage start date, submission URL and deadline. Save.
-2. **Pipeline → paste a YouTube video URL → Scan video.** The row shows the stage: reading info, downloading
-   chat/audio, picking moments, rendering. The first scan also loads the Whisper model, which takes a minute.
+2. **Pipeline → paste a video URL → Scan.** Pick a scan window first: *Auto* scans the last 2 hours of any VOD
+   longer than 4 hours (a 2-hour window of Twitch chat downloads in seconds, so clips are reviewable in about
+   2 minutes) and the whole video otherwise; *Last 6 hours*, *Whole video* and *Custom start/end* are there too.
+   A stream that is still live works: the latest window of the growing VOD is scanned. After a windowed scan,
+   **Scan the rest** continues in 2-hour chunks in the background, merging moments and skipping ranges already
+   scanned. Videos published before the campaign's footage start date are marked *outside campaign window* and
+   not scanned (channel watching does the same); *Scan anyway* overrides for one video. The first scan also loads
+   the Whisper model, which takes a minute.
    For a channel instead of a single video, go to **Sources** and add `youtube.com/@name` or `twitch.tv/name`;
    the suggestion chips resolve IShowSpeed, CaseOh, LACY and Kai Cenat by lookup.
 3. **Sources → Set facecam crop** (once per channel). Grab a frame, drag a box around the webcam, save. Clips

@@ -97,7 +97,9 @@ def resolve_channel(kind: str, ident: str) -> dict:
         name = ident.lower().lstrip("@")
         info = tools.ytdlp_json(f"https://www.twitch.tv/{name}/videos?filter=archives&sort=time",
                                 ["--flat-playlist", "--playlist-items", "1"])
-        return {"kind": kind, "name": info.get("uploader") or info.get("title") or name, "handle": name,
+        first = (info.get("entries") or [{}])[0] or {}
+        title = (info.get("title") or "").split(" - ")[0].strip()
+        return {"kind": kind, "name": first.get("uploader") or info.get("uploader") or title or name, "handle": name,
                 "external_id": name, "url": f"https://www.twitch.tv/{name}"}
     raise ValueError("Not a channel")
 

@@ -312,6 +312,7 @@ def list_videos(campaign_id: int | None = None):
     where, params = ("campaign_id=?", (campaign_id,)) if campaign_id else ("1=1", ())
     out = []
     for v in db.rows("videos", where, params, order="id DESC"):
+        v["unscanned"] = pipeline.unscanned_chunks(v.get("scanned_ranges") or [], float(v["duration"])) if v.get("duration") else []
         v["clip_counts"] = {r["status"]: r["c"] for r in db.execute(
             "SELECT status, COUNT(*) c FROM clips WHERE video_id=? GROUP BY status", (v["id"],)).fetchall()}
         v["moment_count"] = db.execute("SELECT COUNT(*) c FROM moments WHERE video_id=?", (v["id"],)).fetchone()["c"]
@@ -321,26 +322,46 @@ def list_videos(campaign_id: int | None = None):
 
 @app.post("/api/videos")
 def add_video(body: dict):
+    """Add a video and scan it. body.window: 'auto' (default: last 2 hours for VODs over 4 hours), 'last2h', 'last6h',
+    'whole', or {'start': seconds, 'end': seconds}. body.override skips the campaign date gate."""
     cid = int(body.get("campaign_id") or 0)
     if not db.get("campaigns", cid):
         _404("Campaign not found")
     try:
-        return pipeline.add_video(cid, body.get("url") or "", body.get("source_id"))
+        return pipeline.add_video(cid, body.get("url") or "", body.get("source_id"), window=body.get("window"),
+                                  override=bool(body.get("override")))
     except ValueError as e:
         _bad(str(e))
 
 
 @app.post("/api/videos/{vid}/rescan")
-def rescan_video(vid: int):
-    if not db.get("videos", vid):
-        _404()
-    db.update("videos", vid, {"status": "queued", "stage": "Waiting to scan", "error": None, "progress": 0})
-    return {"job_id": jobs.enqueue("scan_video", {"video_id": vid})}
+def rescan_video(vid: int, body: dict | None = None):
+    v = db.get("videos", vid) or _404()
+    body = body or {}
+    try:
+        w = pipeline.parse_window(body.get("window", "auto"))
+    except ValueError as e:
+        _bad(str(e))
+    data = {"status": "queued", "stage": "Waiting to scan", "error": None, "progress": 0, "scan_window": w}
+    if body.get("override"):
+        data["override"] = 1
+    db.update("videos", vid, data)
+    return {"job_id": jobs.enqueue("scan_video", {"video_id": vid, "window": w})}
+
+
+@app.post("/api/videos/{vid}/scan_rest")
+def scan_rest(vid: int):
+    v = db.get("videos", vid) or _404()
+    if not v.get("duration"):
+        _bad("Scan a window first so the video's length is known")
+    n = pipeline.scan_rest(vid)
+    return {"queued_chunks": n}
 
 
 @app.delete("/api/videos/{vid}")
 def delete_video(vid: int):
     v = db.get("videos", vid) or _404()
+    pipeline.cancel_video_jobs(vid)
     for c in db.rows("clips", "video_id=?", (vid,)):
         _delete_clip_files(c)
     db.delete("videos", vid)

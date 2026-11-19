@@ -90,7 +90,7 @@ CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status);
 JSON_COLS = {
     "campaigns": {"required_names", "required_hashtags", "platforms", "checklist"},
     "sources": {"facecam"},
-    "videos": {"signals"},
+    "videos": {"signals", "scanned_ranges", "scan_window"},
     "moments": {"reasons", "chat_words"},
     "clips": {"transcript", "hashtags", "post_text", "checklist", "rule_results"},
     "accounts": {"meta", "campaign_ids"},
@@ -116,8 +116,21 @@ def conn() -> sqlite3.Connection:
     return c
 
 
+MIGRATIONS = {
+    "videos": [("scan_start", "REAL"), ("scan_end", "REAL"), ("scanned_ranges", "TEXT NOT NULL DEFAULT '[]'"),
+               ("override", "INTEGER NOT NULL DEFAULT 0"), ("live", "INTEGER NOT NULL DEFAULT 0"),
+               ("scan_window", "TEXT NOT NULL DEFAULT '{}'")],
+}
+
+
 def init() -> None:
-    conn().executescript(SCHEMA)
+    c = conn()
+    c.executescript(SCHEMA)
+    for table, cols in MIGRATIONS.items():
+        have = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+        for name, decl in cols:
+            if name not in have:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def _decode(table: str, row: sqlite3.Row | None) -> dict | None:

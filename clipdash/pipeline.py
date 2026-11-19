@@ -1,17 +1,18 @@
-"""Pipeline steps run by background jobs: scan a video for moments, render a clip, finalize (trim),
-watch sources for new videos. Each step reports progress into the videos/clips/jobs tables."""
+"""Pipeline steps run by background jobs: scan a video (or a time window of it) for moments, render a clip,
+finalize (trim), watch sources for new videos. Each step reports progress into the videos/clips/jobs tables."""
 from __future__ import annotations
 
 import json
-import re
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import numpy as np
-
 from . import captions as cap
 from . import chat, config, cut, db, disk, rules, signals, sources, tools
+
+CHUNK_S = 2 * 3600          # "Scan the rest" works in 2-hour chunks
+LONG_VOD_S = 4 * 3600       # VODs longer than this default to the last 2 hours
+LAST_2H = {"kind": "last", "hours": 2}
 
 
 def _video_dir(video: dict) -> Path:
@@ -24,10 +25,96 @@ def _set_video(video_id: int, **fields) -> None:
     db.update("videos", video_id, fields)
 
 
+def fmt_ts(sec: float) -> str:
+    sec = int(sec)
+    return f"{sec // 3600:02d}:{(sec % 3600) // 60:02d}:{sec % 60:02d}"
+
+
+# ---------------------------------------------------------------- windows
+
+def parse_window(w) -> dict:
+    """Normalise a window spec from the UI: 'auto' | 'last2h' | 'last6h' | 'whole' | {'start': s, 'end': e}."""
+    if w in (None, "", "auto"):
+        return {"kind": "auto"}
+    if isinstance(w, str):
+        if w == "whole":
+            return {"kind": "whole"}
+        if w.startswith("last") and w.endswith("h"):
+            return {"kind": "last", "hours": float(w[4:-1])}
+        raise ValueError(f"Unknown scan window {w!r}")
+    if isinstance(w, dict):
+        if w.get("kind") in ("auto", "whole", "last"):
+            return w
+        return {"kind": "range", "start": float(w.get("start") or 0), "end": float(w["end"]) if w.get("end") not in (None, "") else None}
+    raise ValueError("Bad scan window")
+
+
+def resolve_window(w: dict, duration: float) -> tuple[float, float]:
+    duration = max(0.0, float(duration or 0))
+    kind = w.get("kind", "auto")
+    if kind == "auto":
+        kind, w = ("last", LAST_2H) if duration > LONG_VOD_S else ("whole", {})
+    if kind == "whole":
+        return 0.0, duration
+    if kind == "last":
+        return max(0.0, duration - float(w.get("hours", 2)) * 3600), duration
+    start = max(0.0, float(w.get("start") or 0))
+    end = duration if w.get("end") is None else min(duration, float(w["end"]))
+    if end <= start:
+        raise ValueError("The scan window end must be after its start")
+    return start, end
+
+
+def merge_ranges(ranges: list, new: tuple[float, float]) -> list:
+    rs = sorted([list(map(float, r)) for r in ranges] + [list(new)])
+    out: list = []
+    for s, e in rs:
+        if out and s <= out[-1][1] + 1:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return out
+
+
+def unscanned_chunks(ranges: list, duration: float, chunk: float = CHUNK_S) -> list[tuple[float, float]]:
+    """Gaps not yet scanned, split into chunks, most recent first."""
+    gaps, cursor = [], 0.0
+    for s, e in sorted(ranges):
+        if s > cursor + 1:
+            gaps.append((cursor, s))
+        cursor = max(cursor, e)
+    if duration > cursor + 1:
+        gaps.append((cursor, duration))
+    out = []
+    for s, e in gaps:
+        x = e
+        while x > s + 1:
+            out.append((max(s, x - chunk), x))
+            x -= chunk
+    out.sort(key=lambda r: -r[1])
+    return out
+
+
+def outside_campaign_window(campaign: dict, published_at: str | None) -> str | None:
+    """Reason text if the video's publish date falls outside the campaign's footage window, else None."""
+    pub = rules._parse_dt(published_at)
+    start, end = rules._parse_dt(campaign.get("source_start")), rules._parse_dt(campaign.get("source_end"))
+    if pub is None or (start is None and end is None):
+        return None
+    if start and pub < start:
+        return f"Outside campaign window: published {pub.date()}, campaign footage starts {start.date()}"
+    if end and pub > end:
+        return f"Outside campaign window: published {pub.date()}, campaign footage ends {end.date()}"
+    return None
+
+
 # ---------------------------------------------------------------- scan
 
 def _auto_subs_cues(url: str, d: Path) -> list[list]:
-    """YouTube auto-generated English captions as [[t, text], ...] (json3 format)."""
+    """YouTube auto-generated English captions as [[t, text], ...] (json3 format). Cached per video."""
+    cache = d / "cues.json"
+    if cache.exists():
+        return json.loads(cache.read_text())
     for f in d.glob("subs*.json3"):
         f.unlink()
     try:
@@ -45,51 +132,81 @@ def _auto_subs_cues(url: str, d: Path) -> list[list]:
     cues = []
     for ev in data.get("events", []):
         t = ev.get("tStartMs")
-        segs = ev.get("segs") or []
-        text = "".join(s.get("utf8", "") for s in segs).strip()
+        text = "".join(s.get("utf8", "") for s in (ev.get("segs") or [])).strip()
         if t is not None and text and text != "\n":
             cues.append([round(t / 1000.0, 2), text])
     for f in files:
         f.unlink(missing_ok=True)
+    cache.write_text(json.dumps(cues))
     return cues
 
 
-def scan_video(video_id: int, progress) -> None:
+def _in_window(rows: list[list], start: float, end: float) -> list[list]:
+    return [r for r in rows if start <= r[0] <= end]
+
+
+def scan_video(video_id: int, progress, window=None) -> None:
     video = db.get("videos", video_id)
     if not video:
         return
+    campaign = db.get("campaigns", video["campaign_id"])
     settings = db.all_settings()
     d = _video_dir(video)
+    w = parse_window(window if window is not None else video.get("scan_window") or "auto")
     _set_video(video_id, status="scanning", stage="Reading video info", progress=0.05, error=None)
     progress(0.05, "Reading video info")
     info = sources.video_info(video["url"])
+    live = bool(info.get("live_now"))
     _set_video(video_id, title=info["title"] or video["title"], channel=info["channel"] or video["channel"],
-               published_at=info["published_at"] or video["published_at"], duration=info["duration"],
-               is_stream=max(int(video.get("is_stream") or 0), info["is_stream"]))
-    if info.get("live_now"):
-        raise tools.ToolError("This stream is still live. Add it again once the VOD is finished.")
-    duration = float(info["duration"] or 0)
-    sig: dict = {}
-    summary: dict = {"chat_messages": 0, "audio": False, "heatmap": False, "transcript_cues": 0}
+               published_at=info["published_at"] or video["published_at"], duration=info["duration"] or video.get("duration"),
+               is_stream=max(int(video.get("is_stream") or 0), info["is_stream"]), live=int(live))
+    video = db.get("videos", video_id)
 
-    # 1. chat replay (strongest signal)
+    # Campaign footage window applies to the whole video, before any download.
+    reason = outside_campaign_window(campaign, video.get("published_at"))
+    if reason and not video.get("override"):
+        _set_video(video_id, status="skipped", stage=reason, progress=1.0)
+        progress(1.0, reason)
+        return
+
+    duration = float(video.get("duration") or 0)
+    if live and duration <= 0:
+        raise tools.ToolError("This stream just started and the VOD has no playable segments yet. Try again in a few minutes.")
+    if duration <= 0:
+        raise tools.ToolError("Could not read the video's duration; the VOD may be unavailable or sub-only.")
+    start, end = resolve_window(w, duration)
+    label = f"{fmt_ts(start)}–{fmt_ts(end)}" + (" (stream in progress)" if live else "")
+    _set_video(video_id, scan_start=start, scan_end=end)
+    sig: dict = {}
+    summary: dict = dict(video.get("signals") or {})
+    summary.update({"audio": False, "heatmap": False, "transcript_cues": 0, "last_window": [start, end]})
+
+    # 1. chat replay (strongest signal). Twitch: windowed download (seconds). YouTube: whole replay, cached, then filtered.
     rows: list[list] = []
-    chat_path = d / "chat.json"
     try:
-        if chat_path.exists():
-            rows = chat.load(chat_path)
-        elif video["platform"] == "twitch":
-            _set_video(video_id, stage="Downloading Twitch chat replay", progress=0.1)
-            progress(0.1, "Downloading Twitch chat replay")
-            chat.download_twitch_chat(video["external_id"], chat_path, on_line=lambda l: progress(None, l[:120]))
-            rows = chat.load(chat_path)
+        if video["platform"] == "twitch":
+            whole = d / "chat.json"
+            win_path = d / f"chat_{int(start)}_{int(end)}.json"
+            if whole.exists() and not live:
+                rows = _in_window(chat.load(whole), start, end)
+            else:
+                _set_video(video_id, stage=f"Downloading Twitch chat {label}", progress=0.1)
+                progress(0.1, f"Downloading Twitch chat {label}")
+                chat.download_twitch_chat(video["external_id"], win_path, start=start, end=end,
+                                          on_line=lambda l: progress(None, l[:120]))
+                rows = chat.load(win_path)
         elif info.get("has_live_chat") or video.get("is_stream"):
-            _set_video(video_id, stage="Downloading YouTube chat replay", progress=0.1)
-            progress(0.1, "Downloading YouTube chat replay")
-            if chat.download_youtube_chat(video["url"], chat_path):
-                rows = chat.load(chat_path)
+            chat_path = d / "chat.json"
+            if not chat_path.exists():
+                _set_video(video_id, stage="Downloading YouTube chat replay (whole stream, cached for later windows)", progress=0.1)
+                progress(0.1, "Downloading YouTube chat replay")
+                chat.download_youtube_chat(video["url"], chat_path)
+            rows = _in_window(chat.load(chat_path), start, end)
     except tools.ToolError as e:
         progress(None, f"Chat unavailable: {str(e)[:200]}")
+        summary["chat_error"] = str(e)[:300]
+    if not db.get("videos", video_id):
+        return
     if rows:
         sig["chat"] = signals.chat_signal(rows, settings["hype_tokens"], settings["bin_seconds"])
         summary["chat_messages"] = len(rows)
@@ -100,32 +217,38 @@ def scan_video(video_id: int, progress) -> None:
         summary["heatmap"] = True
 
     # 3. transcript cues from auto captions (regular uploads without chat)
-    if video["platform"] == "youtube" and not rows and info.get("has_auto_subs"):
+    if video["platform"] == "youtube" and not rows and info.get("has_auto_subs") and not live:
         _set_video(video_id, stage="Reading auto captions", progress=0.3)
         progress(0.3, "Reading auto captions")
-        cues = _auto_subs_cues(video["url"], d)
+        cues = _in_window(_auto_subs_cues(video["url"], d), start, end)
         if cues:
             sig["transcript"] = signals.transcript_signal(cues, settings["bin_seconds"])
             summary["transcript_cues"] = len(cues)
 
-    # 4. audio loudness: skipped on very long VODs that already have chat (the audio track alone is ~1 GB)
-    want_audio = duration <= 4 * 3600 or not sig
-    if want_audio:
-        _set_video(video_id, stage="Downloading audio track", progress=0.4)
+    # 4. audio loudness only when nothing better exists and the window is not huge (audio for a window is ~60 MB/hour)
+    if not sig and (end - start) <= LONG_VOD_S:
+        _set_video(video_id, stage=f"Downloading audio {label}", progress=0.4)
         progress(0.4, "Downloading audio track")
-        audio_path = d / "audio.m4a"
+        audio_path = d / f"audio_{int(start)}_{int(end)}.m4a"
         try:
             if not audio_path.exists():
                 fmt = "Audio_Only/bestaudio/worst" if video["platform"] == "twitch" else "bestaudio[ext=m4a]/bestaudio/worst"
-                tools.run(["yt-dlp", "-f", fmt, "-o", str(audio_path), video["url"]], timeout=7200)
+                cmd = ["yt-dlp", "-f", fmt, "-o", str(audio_path)]
+                if start > 0 or end < duration - 1:
+                    cmd += ["--download-sections", f"*{fmt_ts(start)}-{fmt_ts(end)}"]
+                tools.run(cmd + [video["url"]], timeout=7200)
                 if not audio_path.exists():
-                    cands = [p for p in d.glob("audio.*") if p.suffix != ".json"]
+                    cands = [p for p in d.glob(audio_path.stem + "*") if p.suffix != ".json"]
                     if cands:
                         cands[0].rename(audio_path)
             _set_video(video_id, stage="Analysing loudness", progress=0.6)
             progress(0.6, "Analysing loudness")
             pcm = cut.decode_audio(audio_path, 8000, "s16le")
-            sig["audio"] = signals.audio_signal(pcm, 8000, settings["bin_seconds"])
+            a = signals.audio_signal(pcm, 8000, settings["bin_seconds"])
+            if start > 0:  # the section starts at t=start; shift bins onto the video's time axis
+                a["bins"] = a["bins"] + start
+                a["offset_bins"] = int(start // settings["bin_seconds"])
+            sig["audio"] = a
             summary["audio"] = True
         except tools.ToolError as e:
             progress(None, f"Audio skipped: {str(e)[:200]}")
@@ -135,21 +258,46 @@ def scan_video(video_id: int, progress) -> None:
     _set_video(video_id, stage="Picking moments", progress=0.85)
     progress(0.85, "Picking moments")
     score = signals.combine(sig, settings, settings["bin_seconds"])
-    moments = signals.pick_moments(score, sig, settings, settings["bin_seconds"])
-    db.execute("DELETE FROM moments WHERE video_id=? AND status='found'", (video_id,))
+    moments = signals.pick_moments(score, sig, settings, settings["bin_seconds"], t_min=start, t_max=end)
+    video = db.get("videos", video_id)
+    if not video:
+        return
+    # merge: drop un-rendered moments inside this window, insert the new ones, re-rank everything
+    db.execute("DELETE FROM moments WHERE video_id=? AND status='found' AND t>=? AND t<=?", (video_id, start, end))
+    new_ids = []
     for m in moments:
         m["chat_words"] = signals.top_chat_words(rows, m["t"]) if rows else []
-        db.insert("moments", {"video_id": video_id, "t": m["t"], "score": m["score"], "reasons": m["reasons"],
-                              "chat_words": m["chat_words"], "rank": m["rank"]})
-    summary["moments"] = len(moments)
-    summary["signals_used"] = list(sig)
-    _set_video(video_id, status="scanned", stage=f"{len(moments)} moments found", progress=1.0, signals=summary)
+        new_ids.append(db.insert("moments", {"video_id": video_id, "t": m["t"], "score": m["score"], "reasons": m["reasons"],
+                                             "chat_words": m["chat_words"], "rank": 0}))
+    for rank, m in enumerate(db.rows("moments", "video_id=?", (video_id,), order="score DESC, t"), 1):
+        db.update("moments", m["id"], {"rank": rank})
+    ranges = merge_ranges(video.get("scanned_ranges") or [], (start, end))
+    total = db.execute("SELECT COUNT(*) c FROM moments WHERE video_id=?", (video_id,)).fetchone()["c"]
+    summary.update({"moments": total, "signals_used": list(sig)})
+    covered = sum(e - s for s, e in ranges) >= duration - 2
+    stage = f"Scanned {label}: {len(moments)} moments" + ("" if covered else " · more of the VOD can be scanned")
+    _set_video(video_id, status="scanned", stage=stage, progress=1.0, signals=summary, scanned_ranges=ranges, live=int(live))
     if not moments:
-        _set_video(video_id, status="done", stage="No strong moments found")
+        _set_video(video_id, status="done", stage=f"Scanned {label}: no strong moments" + ("" if covered else " · more of the VOD can be scanned"))
         return
     top = int(settings.get("auto_render_top", 4))
-    for m in db.rows("moments", "video_id=? AND rank<=?", (video_id, top), order="rank"):
+    for m in db.rows("moments", "id IN (" + ",".join("?" * len(new_ids)) + ")", tuple(new_ids), order="score DESC")[:top]:
         queue_render(m["id"])
+
+
+def scan_rest(video_id: int) -> int:
+    """Queue background scans for every unscanned 2-hour chunk, most recent first. Returns how many were queued."""
+    from . import jobs
+    video = db.get("videos", video_id)
+    if not video or not video.get("duration"):
+        return 0
+    n = 0
+    for s, e in unscanned_chunks(video.get("scanned_ranges") or [], float(video["duration"])):
+        jobs.enqueue("scan_video", {"video_id": video_id, "window": {"kind": "range", "start": s, "end": e}})
+        n += 1
+    if n:
+        _set_video(video_id, stage=f"Scanning the rest in {n} chunks", status="queued")
+    return n
 
 
 # ---------------------------------------------------------------- render
@@ -178,6 +326,8 @@ def render_clip(clip_id: int, progress) -> None:
         return
     video = db.get("videos", clip["video_id"])
     campaign = db.get("campaigns", clip["campaign_id"])
+    if not video or not campaign:
+        return
     source = db.get("sources", video["source_id"]) if video.get("source_id") else None
     moment = db.get("moments", clip["moment_id"]) if clip.get("moment_id") else None
     settings = db.all_settings()
@@ -214,6 +364,10 @@ def render_clip(clip_id: int, progress) -> None:
     except tools.ToolError:
         thumb = None
 
+    if not db.get("clips", clip_id):
+        out.unlink(missing_ok=True)
+        seg.unlink(missing_ok=True)
+        return  # deleted while rendering
     chat_words = (moment or {}).get("chat_words") or []
     hook = clip.get("hook") or cap.default_hook(campaign["creator"], words, chat_words)
     post_text = cap.build_all(campaign, hook, chat_words)
@@ -235,7 +389,9 @@ def render_clip(clip_id: int, progress) -> None:
         ass.unlink(missing_ok=True)
     disk.prune_cache(int(settings.get("cache_cap_mb", 3000)) * 1024 * 1024)
     remaining = db.execute("SELECT COUNT(*) c FROM clips WHERE video_id=? AND status='rendering'", (video["id"],)).fetchone()["c"]
-    if remaining == 0:
+    pending_scans = db.execute("SELECT COUNT(*) c FROM jobs WHERE type='scan_video' AND status IN ('queued','running') AND payload LIKE ?",
+                               (f'%"video_id": {video["id"]}%',)).fetchone()["c"]
+    if remaining == 0 and pending_scans == 0:
         _set_video(video["id"], status="done", stage="Clips ready for review", progress=1.0)
     progress(1.0, "Done")
 
@@ -260,7 +416,7 @@ def finalize_clip(clip_id: int, progress) -> None:
 
 
 def grab_frame(source_id: int, progress) -> None:
-    """Download two seconds of the source's latest video and save a frame for the facecam picker."""
+    """Download a few seconds of the source's latest video and save a frame for the facecam picker."""
     source = db.get("sources", source_id)
     vids = sources.list_recent(source, limit=3)
     if not vids:
@@ -278,26 +434,35 @@ def grab_frame(source_id: int, progress) -> None:
     progress(1.0, "Frame ready")
 
 
-# ---------------------------------------------------------------- watching sources
+# ---------------------------------------------------------------- adding & watching
 
-def add_video(campaign_id: int, url: str, source_id: int | None = None, queue: bool = True) -> dict:
+def add_video(campaign_id: int, url: str, source_id: int | None = None, queue: bool = True, window=None,
+              override: bool = False) -> dict:
     from . import jobs
     p = sources.parse(url)
     if not p["kind"].endswith("_video"):
         raise ValueError("That is a channel URL. Add it as a source instead.")
+    w = parse_window(window)
     platform = p["kind"].split("_")[0]
     existing = db.one("videos", "campaign_id=? AND platform=? AND external_id=?", (campaign_id, platform, p["id"]))
     if existing:
-        return existing
+        if queue and existing["status"] in ("skipped", "error", "done", "scanned"):
+            db.update("videos", existing["id"], {"status": "queued", "stage": "Waiting to scan", "error": None,
+                                                 "scan_window": w, "override": int(override or existing.get("override") or 0)})
+            jobs.enqueue("scan_video", {"video_id": existing["id"], "window": w})
+        return db.get("videos", existing["id"])
     vid = db.insert("videos", {"campaign_id": campaign_id, "source_id": source_id, "platform": platform,
                                "external_id": p["id"], "url": p["url"], "title": p["url"], "status": "queued",
-                               "stage": "Waiting to scan"})
+                               "stage": "Waiting to scan", "scan_window": w, "override": int(override)})
     if queue:
-        jobs.enqueue("scan_video", {"video_id": vid})
+        jobs.enqueue("scan_video", {"video_id": vid, "window": w})
     return db.get("videos", vid)
 
 
 def check_sources(progress, campaign_id: int | None = None) -> None:
+    """Queue new videos from watched channels. Videos published before the campaign's footage window are recorded
+    as 'skipped' (with an override in the UI) instead of being scanned."""
+    from . import jobs
     where = "watch=1" + (" AND campaign_id=?" if campaign_id else "")
     params = (campaign_id,) if campaign_id else ()
     settings = db.all_settings()
@@ -313,29 +478,37 @@ def check_sources(progress, campaign_id: int | None = None) -> None:
         except tools.ToolError as e:
             progress(None, f"{s.get('name')}: {str(e)[:120]}")
             continue
-        since = rules._parse_dt(campaign.get("source_start")) or (datetime.now(timezone.utc) - timedelta(days=3))
-        until = rules._parse_dt(campaign.get("source_end"))
+        recent_floor = datetime.now(timezone.utc) - timedelta(days=3)
         added = 0
         for v in vids:
-            if v.get("live_now"):
-                continue
             if settings.get("gta_only") and not sources.looks_like_gta(v["title"]):
-                continue
-            pub = rules._parse_dt(v.get("published_at"))
-            if pub and (pub < since or (until and pub > until)):
                 continue
             if db.one("videos", "campaign_id=? AND platform=? AND external_id=?", (campaign["id"], v["platform"], v["external_id"])):
                 continue
-            vid = db.insert("videos", {"campaign_id": campaign["id"], "source_id": s["id"], "platform": v["platform"],
-                                       "external_id": v["external_id"], "url": v["url"], "title": v["title"],
-                                       "channel": v["channel"], "published_at": v["published_at"], "duration": v["duration"],
-                                       "is_stream": v["is_stream"], "status": "queued", "stage": "Waiting to scan"})
-            from . import jobs
-            jobs.enqueue("scan_video", {"video_id": vid})
-            added += 1
+            row = {"campaign_id": campaign["id"], "source_id": s["id"], "platform": v["platform"], "external_id": v["external_id"],
+                   "url": v["url"], "title": v["title"], "channel": v["channel"], "published_at": v["published_at"],
+                   "duration": v["duration"], "is_stream": v["is_stream"], "live": int(bool(v.get("live_now")))}
+            reason = outside_campaign_window(campaign, v.get("published_at"))
+            pub = rules._parse_dt(v.get("published_at"))
+            if reason or (pub and not campaign.get("source_start") and pub < recent_floor):
+                row.update({"status": "skipped", "stage": reason or "Older than 3 days (no campaign start date set)"})
+                db.insert("videos", row)
+                continue
             if added >= 3:
                 break
+            row.update({"status": "queued", "stage": "Waiting to scan", "scan_window": {"kind": "auto"}})
+            vid = db.insert("videos", row)
+            jobs.enqueue("scan_video", {"video_id": vid, "window": {"kind": "auto"}})
+            added += 1
         db.update("sources", s["id"], {"last_checked": db.now()})
+
+
+def cancel_video_jobs(video_id: int) -> None:
+    db.execute("UPDATE jobs SET status='cancelled', message='Video deleted' WHERE status='queued' AND type='scan_video' AND payload LIKE ?",
+               (f'%"video_id": {video_id}%',))
+    for c in db.rows("clips", "video_id=?", (video_id,)):
+        db.execute("UPDATE jobs SET status='cancelled', message='Clip deleted' WHERE status='queued' AND type IN ('render_clip','finalize_clip') AND payload LIKE ?",
+                   (f'%"clip_id": {c["id"]}%',))
 
 
 def clip_public(clip: dict) -> dict:

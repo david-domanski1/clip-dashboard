@@ -21,9 +21,20 @@ def fmt_ts(sec: float) -> str:
 
 def download_segment(url: str, platform: str, start: float, length: float, out: Path,
                      on_line: Callable[[str], None] | None = None) -> Path:
-    """Fetch only [start, start+length] at up to 1080p. Never the whole VOD."""
-    if out.exists() and out.stat().st_size > 0:
-        return out
+    """Fetch only [start, start+length] at up to 1080p. Never the whole VOD.
+    Twitch VODs go through TwitchDownloaderCLI's section downloader: yt-dlp's ffmpeg HLS seek stalls for
+    offsets deep into a 20-hour-plus VOD (0 bytes after minutes), while TDCLI fetches just the needed
+    segments in ~30 s at any offset. yt-dlp remains the fallback and the YouTube path."""
+    if out.exists():
+        if out.stat().st_size > 50_000:
+            return out
+        out.unlink()  # a stub left by a failed download (yt-dlp once left a 261-byte file); fetch again
+    if platform == "twitch":
+        try:
+            return _download_twitch_section(url, start, length, out, on_line)
+        except tools.ToolError as e:
+            if on_line:
+                on_line(f"TwitchDownloaderCLI failed ({str(e)[-120:]}); falling back to yt-dlp")
     fmt = ("1080p60/1080p/best" if platform == "twitch"
            else "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best")
     tmp = out.with_suffix(".part.mp4")
@@ -35,6 +46,37 @@ def download_segment(url: str, platform: str, start: float, length: float, out: 
         if not cands:
             raise tools.ToolError("yt-dlp produced no file")
         cands[0].rename(tmp)
+    tmp.rename(out)
+    return out
+
+
+def _download_twitch_section(url: str, start: float, length: float, out: Path,
+                             on_line: Callable[[str], None] | None = None) -> Path:
+    m = re.search(r"(\d{6,})", url)
+    if not m:
+        raise tools.ToolError(f"No Twitch VOD id in {url}")
+    exe = tools.tdcli_path()
+    if not exe.exists():
+        tools.install_tdcli(on_line)
+    tmp = out.with_suffix(".part.mp4")
+    tmp.unlink(missing_ok=True)
+    tmpdir = out.parent / "tdtmp"
+    tmpdir.mkdir(parents=True, exist_ok=True)
+    tail: list[str] = []
+
+    def collect(line: str) -> None:
+        line = line.strip()
+        if line:
+            tail.append(line[-160:])
+            del tail[:-5]
+        if on_line and "[STATUS]" in line:
+            on_line(line.replace("[STATUS] - ", ""))
+
+    tools.run([str(exe), "videodownload", "-u", m.group(1), "-o", str(tmp), "-b", f"{int(start)}s", "-e", f"{int(start + length)}s",
+               "-q", "1080p60", "--ffmpeg-path", tools.ffmpeg_path(), "--temp-path", str(tmpdir),
+               "--collision", "Overwrite", "--banner", "false"], timeout=1800, on_line=collect)
+    if not tmp.exists() or tmp.stat().st_size < 10_000:
+        raise tools.ToolError("TwitchDownloaderCLI produced no video section. Last output: " + " | ".join(tail))
     tmp.rename(out)
     return out
 
@@ -161,20 +203,56 @@ def build_filter(facecam: dict | None, layout: str, ass_path: Path | None, W: in
     return f + "[vout]"
 
 
+_encoder_cache: dict = {}
+
+
+def video_encoder() -> list[str]:
+    """Hardware H.264 when the bundled ffmpeg has one that actually works here (VideoToolbox on Apple Silicon,
+    NVENC/QSV/AMF on Windows), else libx264. A 90-second 1080×1920 clip encodes in ~30 s on hardware versus
+    several minutes in software. The choice is verified once with a tiny test encode and cached."""
+    if "args" in _encoder_cache:
+        return _encoder_cache["args"]
+    import subprocess
+    ff = tools.ffmpeg_path()
+    listed = subprocess.run([ff, "-hide_banner", "-encoders"], capture_output=True, text=True, **tools._popen_kwargs()).stdout
+    candidates = [("h264_videotoolbox", ["-c:v", "h264_videotoolbox", "-b:v", "7M", "-maxrate", "9M", "-bufsize", "14M", "-allow_sw", "1"]),
+                  ("h264_nvenc", ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "7M", "-maxrate", "9M"]),
+                  ("h264_qsv", ["-c:v", "h264_qsv", "-b:v", "7M", "-maxrate", "9M"]),
+                  ("h264_amf", ["-c:v", "h264_amf", "-b:v", "7M", "-maxrate", "9M"])]
+    chosen = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+    for name, args in candidates:
+        if f" {name} " not in listed:
+            continue
+        test = subprocess.run([ff, "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:r=30", "-t", "0.5",
+                               *args, "-pix_fmt", "yuv420p", "-f", "null", "-"], capture_output=True, text=True, timeout=60, **tools._popen_kwargs())
+        if test.returncode == 0:
+            chosen = args
+            break
+    _encoder_cache["args"] = chosen
+    return chosen
+
+
 def render(src: Path, out: Path, facecam: dict | None, layout: str, ass_path: Path | None,
            cam_fraction: float = 0.32, on_line: Callable[[str], None] | None = None) -> Path:
-    tools.run(["ffmpeg", "-y", "-loglevel", "error", "-stats", "-i", str(src),
-               "-filter_complex", build_filter(facecam, layout, ass_path, cam_fraction=cam_fraction),
-               "-map", "[vout]", "-map", "0:a?", "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-               "-r", "60", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
-               "-movflags", "+faststart", str(out)], timeout=7200, on_line=on_line)
+    enc = video_encoder()
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-stats", "-i", str(src),
+           "-filter_complex", build_filter(facecam, layout, ass_path, cam_fraction=cam_fraction),
+           "-map", "[vout]", "-map", "0:a?", *enc, "-r", "60", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", str(out)]
+    try:
+        tools.run(cmd, timeout=7200, on_line=on_line)
+    except tools.ToolError:
+        if enc[1] == "libx264":
+            raise
+        _encoder_cache["args"] = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+        tools.run(cmd[: cmd.index(enc[0])] + _encoder_cache["args"] + cmd[cmd.index(enc[0]) + len(enc):], timeout=7200, on_line=on_line)
     return out
 
 
 def trim(src: Path, out: Path, start: float, end: float) -> Path:
     """Re-encode [start, end] of a rendered clip (captions already burned in) for a frame-accurate cut."""
     tools.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(src),
-               "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-c:a", "aac", "-b:a", "192k",
+               *video_encoder(), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
                "-movflags", "+faststart", str(out)], timeout=3600)
     return out
 

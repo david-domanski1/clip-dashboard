@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import zipfile
 from pathlib import Path
 from typing import Callable
@@ -110,37 +111,57 @@ def tdcli_asset_name() -> str:
     return "LinuxArm64" if arch in ("arm64", "aarch64") else "Linux-x64"
 
 
+_tdcli_lock = threading.Lock()
+
+
 def install_tdcli(progress: Callable[[str], None] | None = None) -> Path:
-    """Fetch the latest TwitchDownloaderCLI release asset for this OS/arch. Twitch's GQL endpoint
-    rejects plain scripts with an integrity check; this tool is what works for chat replays."""
+    """Fetch the latest TwitchDownloaderCLI release asset for this OS/arch. Twitch's GQL endpoint rejects plain
+    scripts with an integrity check; this tool is what works for chat replays. Serialised with a lock (two scans
+    starting at once used to download over each other and extract a truncated zip), downloaded to a temp file,
+    size-checked, and the binary is verified before it is used."""
     import requests
     say = progress or (lambda s: None)
-    config.ensure_dirs()
-    say("Looking up the latest TwitchDownloaderCLI release…")
-    rel = requests.get("https://api.github.com/repos/lay295/TwitchDownloader/releases/latest", timeout=30).json()
-    want = tdcli_asset_name()
-    asset = next((a for a in rel.get("assets", []) if "CLI" in a["name"] and want in a["name"]), None)
-    if not asset:
-        raise ToolError(f"No TwitchDownloaderCLI build for {want} in release {rel.get('tag_name')}")
-    zpath = config.TOOLS / "tdcli.zip"
-    say(f"Downloading {asset['name']} ({asset['size'] // 1_000_000} MB)…")
-    with requests.get(asset["browser_download_url"], stream=True, timeout=600) as r:
-        r.raise_for_status()
-        with open(zpath, "wb") as f:
-            for chunk in r.iter_content(1 << 20):
-                f.write(chunk)
-    with zipfile.ZipFile(zpath) as z:
-        z.extractall(config.TOOLS)
-    zpath.unlink(missing_ok=True)
-    exe = tdcli_path()
-    if not exe.exists():
-        raise ToolError("Downloaded archive did not contain TwitchDownloaderCLI")
-    if os.name != "nt":
-        exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        if platform.system() == "Darwin":
-            subprocess.run(["xattr", "-d", "com.apple.quarantine", str(exe)], capture_output=True)
-    say("TwitchDownloaderCLI installed.")
-    return exe
+    with _tdcli_lock:
+        exe = tdcli_path()
+        if exe.exists():
+            return exe
+        config.ensure_dirs()
+        say("Looking up the latest TwitchDownloaderCLI release…")
+        rel = requests.get("https://api.github.com/repos/lay295/TwitchDownloader/releases/latest", timeout=30).json()
+        want = tdcli_asset_name()
+        asset = next((a for a in rel.get("assets", []) if "CLI" in a["name"] and want in a["name"]), None)
+        if not asset:
+            raise ToolError(f"No TwitchDownloaderCLI build for {want} in release {rel.get('tag_name')}")
+        zpath = config.TOOLS / f"tdcli-{os.getpid()}-{threading.get_ident()}.zip.part"
+        say(f"Downloading {asset['name']} ({asset['size'] // 1_000_000} MB)…")
+        try:
+            with requests.get(asset["browser_download_url"], stream=True, timeout=600) as r:
+                r.raise_for_status()
+                with open(zpath, "wb") as f:
+                    for chunk in r.iter_content(1 << 20):
+                        f.write(chunk)
+            got = zpath.stat().st_size
+            if asset.get("size") and got != asset["size"]:
+                raise ToolError(f"TwitchDownloaderCLI download was incomplete ({got} of {asset['size']} bytes). Check the connection and retry.")
+            try:
+                with zipfile.ZipFile(zpath) as z:
+                    z.extractall(config.TOOLS)
+            except (zipfile.BadZipFile, EOFError) as e:
+                raise ToolError(f"TwitchDownloaderCLI archive was corrupt ({got} bytes): {e}. Retry the scan.") from e
+        finally:
+            zpath.unlink(missing_ok=True)
+        if not exe.exists():
+            raise ToolError("Downloaded archive did not contain TwitchDownloaderCLI")
+        if os.name != "nt":
+            exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            if platform.system() == "Darwin":
+                subprocess.run(["xattr", "-d", "com.apple.quarantine", str(exe)], capture_output=True)
+        r = subprocess.run([str(exe), "--version"], capture_output=True, text=True, **_popen_kwargs())
+        if r.returncode != 0:
+            exe.unlink(missing_ok=True)
+            raise ToolError(f"TwitchDownloaderCLI does not run on this computer: {(r.stderr or r.stdout)[-300:]}")
+        say(f"TwitchDownloaderCLI installed ({r.stdout.strip().split(chr(10))[0]}).")
+        return exe
 
 
 # ---- Whisper ----
