@@ -109,10 +109,24 @@ async function refreshState() {
     $('#pill-subs').textContent = (t ? t.submissions.count : st.submissions_due) || '';
     $('#pill-attention').textContent = (t && t.attention.length) || '';
     $('#dry-run-flag').classList.toggle('hidden', !st.dry_run);
-    $('#jobs-mini').innerHTML = st.jobs_running.length ? st.jobs_running.map((j) => `<div>⟳ ${esc(j.type.replace('_', ' '))} ${Math.round(j.progress * 100)}%<br><span class="small">${esc(j.message)}</span></div>`).join('') + (st.jobs_queued ? `<div>${st.jobs_queued} queued</div>` : '') : `<div>Idle${st.jobs_queued ? ' · ' + st.jobs_queued + ' queued' : ''}</div>`;
+    $('#jobs-mini').innerHTML = jobsSummary(st.jobs_running, st.jobs_queued);
+    $$('#jobs-mini [data-cancel-job]').forEach((b) => b.onclick = (e) => { e.preventDefault(); post(`/api/jobs/${b.dataset.cancelJob}/cancel`).then(refreshState).catch(toastErr); });
     const d = st.disk;
-    $('#disk-mini').innerHTML = `Disk: ${fmtBytes(d.free_bytes)} free · cache ${fmtBytes(d.cache_bytes)} · clips ${fmtBytes(d.clips_bytes)}`;
+    $('#disk-mini').innerHTML = d.free_bytes < 2 * 1024 ** 3 ? `<span class="disk-warn">Disk low: ${fmtBytes(d.free_bytes)} free</span>` : '';
   } catch (e) { $('#jobs-mini').textContent = 'Server unreachable'; }
+}
+
+// One line like "Making 2 clips · 1 scan running"; the details are in a popover.
+const JOB_WORDS = { render_clip: ['Making', 'clip', 'clips'], finalize_clip: ['Exporting', 'clip', 'clips'], render_intro: ['Voicing', 'intro', 'intros'], scan_video: ['', 'scan running', 'scans running'],
+  check_sources: ['Checking', 'channel', 'channels'], publish_post: ['Posting', 'clip', 'clips'], check_post: ['Checking', 'post', 'posts'], refresh_stats: ['Refreshing', 'stats', 'stats'],
+  grab_frame: ['Grabbing', 'frame', 'frames'], install_tdcli: ['Installing', 'tool', 'tools'], download_whisper: ['Downloading', 'model', 'models'], download_piper_voice: ['Downloading', 'voice', 'voices'] };
+function jobsSummary(running, queued) {
+  const counts = {}; running.forEach((j) => { counts[j.type] = (counts[j.type] || 0) + 1; });
+  const parts = Object.entries(counts).map(([t, n]) => { const w = JOB_WORDS[t] || ['Running', t.replace(/_/g, ' '), t.replace(/_/g, ' ')]; return `${w[0]} ${n} ${n === 1 ? w[1] : w[2]}`.trim(); });
+  const line = parts.length ? parts.join(' · ') : 'Idle';
+  const tail = queued ? ` · ${queued} waiting` : '';
+  const pop = running.length ? `<div class="pop">${running.map((j) => `<div><b>${esc(label('job', j.status))}</b> ${esc(j.type.replace(/_/g, ' '))} · ${Math.round(j.progress * 100)}%<br><span class="small muted">${esc(j.message || '')}</span><br><a href="#" class="small" data-cancel-job="${j.id}">Cancel</a></div>`).join('')}</div>` : '';
+  return `<details><summary title="click for details">${running.length ? '⟳ ' : ''}${esc(line + tail)}</summary>${pop}</details>`;
 }
 
 const VIEWS = {};
@@ -828,8 +842,8 @@ PANES.stats = async (el) => {
   const c = campaign();
   const st = await get(`/api/stats${c ? '?campaign_id=' + c.id : ''}`);
   el.innerHTML = `<div class="row between"><div><h2 style="margin-top:0">Stats</h2><p class="sub">Views where the platform API provides them (direct and service routes). Assisted posts show no views. Estimated earnings use the campaign's rate and cap; pool campaigns pay by share of approved views, which the app can't know.</p></div><button class="btn" id="refresh">Refresh views</button></div>
-    <div class="stat-tiles">${st.campaigns.map((x) => `<div class="tile teal"><div class="n">${fmtNum(x.views)}</div><div class="l">${esc(x.campaign.name)} views over ${x.posts} live posts</div></div>
-      <div class="tile yellow"><div class="n">${x.campaign.pay_model === 'pool' ? '$' + fmtNum(x.campaign.pool_budget) + ' pool' : '$' + x.earnings.toFixed(2)}</div><div class="l">${x.campaign.pay_model === 'pool' ? `pool · ${x.campaign.min_views ? fmtNum(x.views) + ' / ' + fmtNum(x.campaign.min_views) + ' views needed' : 'split by view share'}` : 'estimated earnings'}</div></div>`).join('') || emptyState('No live posts yet. Publish an approved clip', 'Publish', '#/publish')}</div>
+    <div class="stat-tiles">${st.campaigns.map((x) => `<div class="tile"><div class="n">${fmtNum(x.views)}</div><div class="l">${esc(x.campaign.name)} views over ${x.posts} live posts</div></div>
+      <div class="tile"><div class="n">${x.campaign.pay_model === 'pool' ? '$' + fmtNum(x.campaign.pool_budget) + ' pool' : '$' + x.earnings.toFixed(2)}</div><div class="l">${x.campaign.pay_model === 'pool' ? `pool · ${x.campaign.min_views ? fmtNum(x.views) + ' / ' + fmtNum(x.campaign.min_views) + ' views needed' : 'split by view share'}` : 'estimated earnings'}</div></div>`).join('') || emptyState('No live posts yet. Publish an approved clip', 'Publish', '#/publish')}</div>
     <div class="panel" style="margin-top:14px"><table><tr><th>Post</th><th>Platform</th><th>Views</th><th>Est.</th><th>Checked</th></tr>${st.posts.map((p) => `<tr><td class="small"><a href="${esc(p.url || '#')}" target="_blank">${esc(p.clip?.hook || p.title)}</a></td><td><span class="badge">${p.platform}</span> <span class="badge ${p.route}">${p.route}</span></td><td>${p.views == null ? '<span class="muted">n/a</span>' : fmtNum(p.views)}</td><td>${p.earnings_estimate ? '$' + p.earnings_estimate.toFixed(2) : ''}</td><td class="small muted">${p.views_checked_at ? fmtDate(p.views_checked_at) : ''}</td></tr>`).join('')}</table></div>`;
   $('#refresh').onclick = () => post(`/api/stats/refresh${c ? '?campaign_id=' + c.id : ''}`).then(() => toast('Refreshing in the background')).catch(toastErr);
 };

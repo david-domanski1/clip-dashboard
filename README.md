@@ -5,27 +5,40 @@ each one, and posts or schedules the approved ones to YouTube, TikTok and Instag
 computer with your own accounts. Nothing is automatic past the point where a person watches the clip:
 every post is something you approved.
 
-![Review](docs/screenshots/review.png)
+![Today](docs/screenshots/today.png)
 
 ## What it does
+
+The sidebar has six places: **Today**, **Review**, **Publish**, **Submissions**, **Sources** and **Settings**. Today is a
+checklist that drives the day: clips waiting for you, approved clips not yet posted, posted clips not yet submitted (with
+the soonest countdown), the channels being watched (live ones marked LIVE) and anything that failed, each with one button.
 
 1. **Campaign** – you paste the campaign's rules (creator, required name and hashtag, minimum length,
    platforms, footage dates, submission deadline, pay). Rules are data: the app checks the ones a machine
    can check and shows the rest as a checklist.
 2. **Sources** – YouTube/Twitch channels or single videos attached to the campaign. Channels are watched for
-   new GTA VI videos. A visual picker sets where the streamer's facecam sits.
-3. **Pipeline** – each video is scanned for moments (chat spikes, YouTube "most replayed", transcript cues,
+   new GTA VI videos. Each source opens to show its videos and the ranked moments found in each one: a thumbnail,
+   a plain label (*Chat exploded*, *Big reaction*, *Some reaction*, *Quiet*) and what chat was saying. Moments
+   where the streamer is not talking or chat is spam are tucked under *show skipped*. A visual picker sets where
+   the streamer's facecam sits.
+3. **Clips** – each video is scanned for moments (chat spikes, YouTube "most replayed", transcript cues,
    loudness), only the 90-second segments around the best moments are downloaded, Whisper transcribes them,
    captions are burned in and the clip is laid out 9:16 (facecam on top, gameplay below).
-4. **Review** – a grid of 9:16 players. Trim, pick a hook sentence from the transcript, edit the per-platform
-   post text, see rule checks pass or fail, tick the checklist, approve or reject. A clip that fails a rule
-   cannot be approved.
+4. **Review** – the clip plays full height on the left; on the right: the hook (with three alternatives), the
+   checklist, Approve / Reject. Trim, per-platform post text and rule results sit in collapsed sections below;
+   rules show as one green line (*Passes all 11 campaign rules*) or a red list. Approve stays disabled, with the
+   reason next to it, until the checklist is ticked and every rule passes. Keyboard: space play/pause, A approve,
+   R reject, → next clip.
 5. **Publish** – post now or schedule (date, time, time zone) to one account per platform through one of
    three routes: *direct* (your own developer app on the official API), *service* (an audited third-party
    posting API), *assisted* (the app reveals the file, copies the caption and opens the upload page).
 6. **Submissions** – when a post goes live, a countdown starts (30 minutes for LACY). One click copies the
    link and opens the campaign's submission page; tick *Submitted* when done.
-7. **Stats** – views where the APIs give them, and estimated earnings from the campaign's rate and cap.
+7. **Settings** – tuning, Setup (tools and credentials), Accounts and Stats as tabs.
+
+Status words are plain: *Making clip…*, *Ready to review*, *Finding moments…*, *Posted*, *Needs your upload*. A failure
+always shows its cause in one sentence with a *Retry* button (the raw error stays in the tooltip). If the app is closed
+mid-render, those clips show *Interrupted — retry* on the next start instead of hanging.
 
 ## Install (once, about 5 minutes)
 
@@ -49,7 +62,7 @@ A terminal window opens, then your browser at `http://127.0.0.1:8765`. Keep the 
 app. Scheduled posts (except YouTube direct and the posting service, which schedule on their side) only fire
 while it runs. Close the window to stop.
 
-First launch shows **Setup**:
+First launch opens **Settings → Setup**:
 
 ![Setup](docs/screenshots/setup.png)
 
@@ -59,43 +72,56 @@ First launch shows **Setup**:
 
 ## Make your first clip (about 10 minutes)
 
-1. **Overview → New campaign.** Paste the campaign URL and click *Read page*, or paste the rules text and
+1. **Campaign dropdown → + New campaign.** Paste the campaign URL and click *Read page*, or paste the rules text and
    *Pre-fill*. The importer reads the page title, Open Graph tags and visible text only (never scripts or
    styles), fills creator, name, pool/rate, platforms and uses the page as the submission URL. Whop Content
    Rewards pages hide the rules until you join: the form says so and leaves hashtag, name and date fields empty
    until you paste the rules. Check every field against the campaign page, especially the required hashtag,
    minimum length (61 s by default), footage start date, submission URL and deadline. Save.
-2. **Pipeline → paste a video URL → Scan.** Pick a scan window first: *Auto* scans the last 2 hours of any VOD
+2. **Sources → paste a video URL → Add.** Pick a scan window first: *Auto* scans the last 2 hours of any VOD
    longer than 4 hours (a 2-hour window of Twitch chat downloads in seconds, so clips are reviewable in about
    2 minutes) and the whole video otherwise; *Last 6 hours*, *Whole video* and *Custom start/end* are there too.
    A stream that is still live works: the latest window of the growing VOD is scanned. After a windowed scan,
    **Scan the rest** continues in 2-hour chunks in the background, merging moments and skipping ranges already
    scanned. Videos published before the campaign's footage start date are skipped silently at add/watch time
-   (logged, not listed); a *Show skipped (N)* toggle at the bottom of the Pipeline reveals them with a
+   (logged, not listed); a *Show skipped (N)* toggle at the bottom of Sources reveals them with a
    *Scan anyway* override. The first scan also loads
    the Whisper model, which takes a minute.
-   After a scan the video shows its **ranked moments**: timestamp, score, why it was picked, the top chat words
-   and a thumbnail. Only the single best moment is rendered automatically (Settings → *auto-render top N*,
+   After a scan the video (inside its source card) shows its **ranked moments**: thumbnail, timestamp, how strong
+   the reaction was and what chat was saying (the numbers are in the tooltip). Only the single best moment is rendered automatically (Settings → *auto-render top N*,
    default 1); every other moment has a **Render** button, plus **Render next best**. Moments where the streamer
-   is barely talking (Silero VAD on 40 s of audio) or where chat is one repeated message are labelled *low speech*
-   / *chat spam* and scored down, so an asleep streamer with a busy chat no longer wins. Queued or running renders
+   is barely talking (Silero VAD on 40 s of audio) or where chat is one repeated message are listed under *show skipped* as
+   *Skipped: streamer not talking* / *Skipped: chat spam*, so an asleep streamer with a busy chat no longer wins. Queued or running renders
    can be cancelled from the same list. On an Apple Silicon Mac a 2-hour window scans in about 30 s and the first
    clip is reviewable in about 2 minutes (hardware H.264 encoding; software fallback elsewhere).
-   For a channel instead of a single video, go to **Sources** and add `youtube.com/@name` or `twitch.tv/name`;
+   For a channel instead of a single video, add `youtube.com/@name` or `twitch.tv/name` in the same box;
    the suggestion chips resolve IShowSpeed, CaseOh, LACY and Kai Cenat by lookup.
-3. **Sources → Set facecam crop** (once per channel). Grab a frame, drag a box around the webcam, save. Clips
-   rendered before that use the gameplay-only layout; use *Re-render* on a clip to apply the crop.
-4. **Review.** Open a clip. Drag the start/end sliders so it opens on something worth watching (the length
-   must stay inside the campaign's limits; the number turns green). Pick a hook from the transcript chips or
-   type one. Check the post text per platform (the required name and tag are added for you). Tick the
-   checklist. **Approve.**
-5. **Accounts → Add account.** Start with route *Assisted* for each platform you use. Add *Direct* or
+
+![Sources](docs/screenshots/sources.png)
+3. **Set the facecam once per streamer.** The first clip from a new streamer shows a yellow banner in Review
+   (*Facecam not set for this streamer*) with the picker inline: grab a frame, drag a box around the webcam, save,
+   or choose *No facecam* so it stops asking. Clips rendered before that use the gameplay-only layout; *Re-render*
+   (under *More*) applies the crop.
+4. **Review.** Open a clip; it plays on the left. Pick a hook from the three chips or type one, tick the checklist,
+   **Approve** (or press A). The line next to the button says what still blocks approval. Open *Trim* if the clip
+   should start later or end earlier (the length must stay inside the campaign's limits; the number turns green),
+   *Post text* to check captions per platform (the required name and tag are added for you), *Rules* to see the
+   checks.
+
+![Review](docs/screenshots/review.png)
+
+5. **Settings → Accounts → Add account.** Start with route *Assisted* for each platform you use. Add *Direct* or
    *Service* accounts later (see below).
 6. **Publish → Post / schedule.** Tick accounts, choose *Post now* or *Schedule* with a time zone, confirm.
    Assisted posts appear in the queue with *Open upload page*, *Copy caption* and *Reveal file*; upload in the
    browser, paste the post link back and click *Live*.
 7. **Submissions.** The countdown runs from the moment the post is live. *Copy + open submission page*, paste
-   the link there, tick *Submitted*. The app warns before anything that would edit or delete a submitted post.
+   the link there, tick *Submitted*. When the countdown reaches zero the row turns to **Missed** (no negative
+   timer) with *Mark submitted anyway* in case you submitted outside the app; the campaign may reject late ones.
+   Rows are sorted active → missed → done. A post sent through the posting service shows *Posted, fetching link…*
+   until the service reports the platform link (polled every 30 s for 15 minutes); if none arrives, *Open on
+   TikTok* and a paste field let you fill it in by hand. The app warns before anything that would edit or delete
+   a submitted post. The page works at phone width, so you can submit from your phone while the computer renders.
 
 ![Publish](docs/screenshots/publish.png)
 
@@ -137,7 +163,8 @@ within the first second; the real action starts by about second 4.
 
 ## Connecting accounts
 
-Each account uses one route. The Accounts page shows what every route can and cannot do.
+Each account uses one route. Settings → Accounts shows what every route can and cannot do. A failed post shows
+the platform's own message and a suggested fix next to *Retry*.
 
 | Route | YouTube | TikTok | Instagram |
 |---|---|---|---|
@@ -221,8 +248,8 @@ push automatically: `printf '#!/bin/sh\n.venv/bin/python scripts/secret_scan.py\
   again (it upgrades packages).
 - **Captions missing on Windows** – the bundled ffmpeg includes libass; if a font error appears, install
   the Arial font or change the font name in `clipdash/cut.py`.
-- **Disk full** – Settings → *Clear cache now*, lower the cache cap, or move `data/` with `CLIPDASH_DATA`.
-- **Twitch chat fails** – Setup → download TwitchDownloaderCLI; on macOS the quarantine flag is removed
+- **Disk full** – the sidebar warns under 2 GB free; Settings → *Clear cache now*, lower the cache cap, or move `data/` with `CLIPDASH_DATA`.
+- **Twitch chat fails** – Settings → Setup → download TwitchDownloaderCLI; on macOS the quarantine flag is removed
   automatically.
 - **Port 8765 busy** – set `CLIPDASH_PORT` before launching.
 
