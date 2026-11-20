@@ -163,3 +163,10 @@ details summary{cursor:pointer;color:var(--teal);font-weight:600}
 .tabs a{padding:8px 12px;color:var(--muted);border-bottom:2px solid transparent;font-weight:600}
 .tabs a.on{color:var(--text);border-bottom-color:var(--pink)}
 @media (max-width:700px){.step{grid-template-columns:34px 1fr}.step>.btn{grid-column:2}}
+
+/* Submissions cards */
+.sub-card{display:grid;grid-template-columns:150px 1fr auto;gap:14px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;margin-bottom:10px}
+.sub-card.missed{border-color:var(--red)}
+.sub-card.done{opacity:.6}
+.sub-actions{justify-content:flex-end}
+@media (max-width:700px){.sub-card{grid-template-columns:1fr}.sub-actions{justify-content:flex-start}}

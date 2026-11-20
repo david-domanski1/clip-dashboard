@@ -134,7 +134,7 @@ VIEWS.home = async (el) => {
         t.review.count ? 'Review' : 'Find moments', t.review.count ? '#/review' : '#/sources')}
       ${step(2, 'Approved, not posted', t.publish.count, t.publish.count ? 'Post now or schedule each approved clip.' : 'Everything approved has been posted.', 'Publish', '#/publish')}
       ${t.workspace ? '' : step(3, 'Posted, not submitted', t.submissions.count,
-        t.submissions.count ? `Soonest deadline in <span class="countdown ${soon !== null && soon < 600 ? 'late' : ''}" data-dl="${esc(t.submissions.soonest)}"></span>` : 'Every live post has been submitted.',
+        t.submissions.count ? (soon !== null && soon <= 0 ? '<span class="countdown late">Missed</span> a deadline has passed' : `Soonest deadline in <span class="countdown ${soon !== null && soon < 600 ? 'late' : ''}" data-dl="${esc(t.submissions.soonest)}"></span>`) : 'Every live post has been submitted.',
         'Submissions', '#/submissions')}
       ${step(t.workspace ? 3 : 4, 'Streams being watched', t.sources.length,
         t.sources.length ? t.sources.map((s) => `<span class="chip">${s.live ? '<b class="live-dot">LIVE</b> ' : ''}${esc(s.name)}</span>`).join(' ') : 'No channel is watched yet. Add one under Sources.',
@@ -147,7 +147,7 @@ VIEWS.home = async (el) => {
     </div>`;
   $$('[data-retry]', el).forEach((b) => b.onclick = async () => { b.disabled = true; try { await post(b.dataset.retry, b.dataset.kind === 'video' ? { override: true } : {}); toast('Retrying'); render(); } catch (e) { toastErr(e); b.disabled = false; } });
   const cd = $('.countdown[data-dl]', el);
-  if (cd) { const tick = () => { const left = (new Date(cd.dataset.dl) - Date.now()) / 1000; cd.textContent = (left < 0 ? '-' : '') + fmtTime(Math.abs(left)); cd.classList.toggle('late', left < 600); }; tick(); clearInterval(S.tick); S.tick = setInterval(tick, 1000); }
+  if (cd) { const tick = () => { const left = (new Date(cd.dataset.dl) - Date.now()) / 1000; if (left <= 0) { cd.textContent = 'Missed'; cd.classList.add('late'); return; } cd.textContent = fmtTime(left); cd.classList.toggle('late', left < 600); }; tick(); clearInterval(S.tick); S.tick = setInterval(tick, 1000); }
 };
 
 // ---------------------------------------------------------------- Campaign editor
@@ -616,7 +616,7 @@ function renderQueue(el, posts) {
     <td class="small">${esc(p.clip?.hook || p.title || '#' + p.clip_id)}</td>
     <td class="small">${esc(p.account?.label || '')}<br><span class="badge ${p.route}">${p.route}</span>${p.options?.synthetic ? ' <span class="badge pink" title="AI voice intro: synthetic-content disclosure set">AI voice</span>' : ''}</td>
     <td class="small"><span class="badge ${p.status}">${p.status}</span><br><span class="muted">${esc(p.state_detail || p.error || '')}</span></td>
-    <td class="small">${p.url ? `<a href="${esc(p.url)}" target="_blank">open ↗</a>` : (['manual', 'private', 'draft'].includes(p.status) ? `<div class="row"><input type="text" placeholder="paste post link" data-link="${p.id}" style="width:170px"><button class="btn sm" data-mark="${p.id}">Live</button></div>` : '')}</td>
+    <td class="small">${p.url ? `<a href="${esc(p.url)}" target="_blank">open ↗</a>` : (p.link_state === 'pending' ? '<span class="warn-text">fetching link…</span>' : (['manual', 'private', 'draft', 'live'].includes(p.status) ? `<div class="row"><input type="text" placeholder="paste post link" data-link="${p.id}" style="width:170px"><button class="btn sm" data-mark="${p.id}">${p.status === 'live' ? 'Save link' : 'Live'}</button></div>` : ''))}</td>
     <td class="small"><div class="row">
       ${p.status === 'manual' ? `<button class="btn sm" data-open="${esc(p.account?.upload_page || '')}">Open upload page</button><button class="btn sm" data-copy="${esc((p.title ? p.title + '\n\n' : '') + p.post_text)}">Copy caption</button><button class="btn sm" data-reveal="${p.clip_id}">Reveal file</button>` : ''}
       ${['failed', 'private', 'draft'].includes(p.status) ? `<button class="btn sm" data-retry="${p.id}">Retry</button>` : ''}
@@ -672,32 +672,46 @@ function optField(aid, o) {
 }
 
 // ---------------------------------------------------------------- Submissions
+// A post is 'active' (countdown running), 'missed' (deadline passed, not submitted) or 'done' (submitted).
+const subState = (p) => p.submitted_at ? 'done' : (p.submission_deadline && new Date(p.submission_deadline) <= Date.now() ? 'missed' : 'active');
 VIEWS.submissions = async (el) => {
   const c = campaign();
   if (!c) { el.innerHTML = noCampaign(); return; }
   if (c.workspace) { el.innerHTML = `<h1>Submissions</h1><p class="sub">The Streamer clips workspace has no campaign, so there is nothing to submit. Pick a campaign in the sidebar.</p>`; return; }
-  const posts = (await get(`/api/posts?campaign_id=${c.id}&status=live`)).sort((a, b) => (a.submitted_at ? 1 : 0) - (b.submitted_at ? 1 : 0) || (a.submission_deadline || '').localeCompare(b.submission_deadline || ''));
+  const order = { active: 0, missed: 1, done: 2 };
+  const posts = (await get(`/api/posts?campaign_id=${c.id}&status=live`)).sort((a, b) => order[subState(a)] - order[subState(b)] || (a.submission_deadline || '').localeCompare(b.submission_deadline || ''));
   el.innerHTML = `<h1>Submissions · ${esc(c.name)}</h1><p class="sub">Every live post must be submitted to the campaign within ${c.submit_minutes} minutes. Copy the link, open the submission page, paste, then tick Submitted. Never edit or delete a submitted post.</p>
     ${c.submission_url ? '' : '<div class="callout pink">This campaign has no submission page URL yet. Add it in the campaign rules.</div>'}
-    <div class="panel" id="subs">${posts.length ? '' : '<div class="muted">No live posts yet.</div>'}</div>`;
+    <div id="subs">${posts.length ? '' : '<div class="empty">No live posts yet. <a class="btn sm primary" href="#/publish" style="margin-left:8px">Publish a clip →</a></div>'}</div>`;
   const box = $('#subs');
   if (!posts.length) return;
-  box.innerHTML = `<table><tr><th>Countdown</th><th>Post</th><th>Link</th><th>Actions</th></tr>${posts.map((p) => `<tr data-row="${p.id}">
-    <td><div class="countdown" data-dl="${p.submission_deadline || ''}" data-sub="${p.submitted_at ? 1 : ''}"></div><div class="small muted">live ${fmtDate(p.posted_at)}</div></td>
-    <td class="small"><b>${esc(p.clip?.hook || p.title)}</b><br>${esc(p.account?.label || '')} · <span class="badge">${p.platform}</span></td>
-    <td class="small"><a href="${esc(p.url || '')}" target="_blank">${esc((p.url || '').slice(0, 60))}</a></td>
-    <td><div class="row"><button class="btn sm" data-copy="${esc(p.url || '')}">Copy link</button>${c.submission_url ? `<button class="btn sm yellow" data-open>Copy + open submission page</button>` : ''}
-      ${p.submitted_at ? `<span class="badge ok">submitted ${fmtDate(p.submitted_at)}</span>` : `<button class="btn sm primary" data-submitted="${p.id}">Submitted ✓</button>`}</div></td></tr>`).join('')}</table>`;
+  box.innerHTML = posts.map((p) => {
+    const st = subState(p);
+    const link = p.url
+      ? `<a href="${esc(p.url)}" target="_blank">${esc(p.url.replace(/^https?:\/\/(www\.)?/, '').slice(0, 60))}</a>`
+      : (p.link_state === 'pending'
+        ? `<span class="warn-text">Posted, fetching link…</span> <span class="small muted">(the service sends it within a few minutes)</span>`
+        : `<div class="row"><span class="warn-text small">No link yet.</span><a class="btn sm" href="${esc(p.profile_url)}" target="_blank">Open on ${esc(p.platform)}</a><input type="text" placeholder="paste the post link" data-link="${p.id}" style="width:230px"><button class="btn sm" data-mark="${p.id}">Save link</button></div>`);
+    return `<div class="sub-card ${st}" data-row="${p.id}">
+      <div class="sub-cd"><div class="countdown" data-dl="${p.submission_deadline || ''}" data-st="${st}"></div><div class="small muted">live ${fmtDate(p.posted_at)}</div></div>
+      <div class="sub-body"><b>${esc(p.clip?.hook || p.title)}</b><div class="small muted">${esc(p.account?.label || '')} · <span class="badge">${p.platform}</span></div><div class="small" style="margin-top:4px">${link}</div>
+        ${st === 'missed' ? '<div class="small bad-text" style="margin-top:4px">Deadline passed. If you submitted outside the app, mark it below; the campaign may reject late submissions.</div>' : ''}</div>
+      <div class="sub-actions row">${p.url ? `<button class="btn sm" data-copy="${esc(p.url)}">Copy link</button>${c.submission_url ? `<button class="btn sm yellow" data-open>Copy + open submission page</button>` : ''}` : ''}
+        ${st === 'done' ? `<span class="badge ok">submitted ${fmtDate(p.submitted_at)}</span>` : (st === 'missed' ? `<button class="btn sm" data-submitted="${p.id}">Mark submitted anyway</button>` : `<button class="btn sm primary" data-submitted="${p.id}" ${p.url ? '' : 'disabled title="Wait for the link first"'}>Submitted ✓</button>`)}</div></div>`;
+  }).join('');
   $$('[data-copy]', box).forEach((b) => b.onclick = () => navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Link copied')));
   $$('[data-open]', box).forEach((b) => b.onclick = () => { navigator.clipboard.writeText($('[data-copy]', b.parentElement).dataset.copy); window.open(c.submission_url, '_blank'); });
   $$('[data-submitted]', box).forEach((b) => b.onclick = () => post(`/api/posts/${b.dataset.submitted}/submitted`).then(render).catch(toastErr));
+  $$('[data-mark]', box).forEach((b) => b.onclick = () => post(`/api/posts/${b.dataset.mark}/mark_live`, { url: $(`[data-link="${b.dataset.mark}"]`, box).value }).then(() => { toast('Link saved'); render(); }).catch(toastErr));
   const tick = () => $$('.countdown', box).forEach((d) => {
-    if (d.dataset.sub) { d.textContent = 'done'; d.className = 'countdown'; return; }
+    if (d.dataset.st === 'done') { d.textContent = 'done'; d.className = 'countdown'; return; }
     if (!d.dataset.dl) { d.textContent = '—'; return; }
     const left = (new Date(d.dataset.dl) - Date.now()) / 1000;
-    d.textContent = (left < 0 ? '-' : '') + fmtTime(Math.abs(left)); d.className = 'countdown ' + (left < 0 ? 'late' : left < 600 ? 'soon' : '');
+    if (left <= 0) { if (d.textContent !== 'Missed') { d.textContent = 'Missed'; d.className = 'countdown late'; if (d.dataset.st === 'active') render(); } return; }
+    d.textContent = fmtTime(left); d.className = 'countdown ' + (left < 600 ? 'soon' : '');
   });
   tick(); clearInterval(S.tick); S.tick = setInterval(tick, 1000);
+  if (posts.some((p) => p.link_state === 'pending')) { clearInterval(S.linkPoll); S.linkPoll = setInterval(() => { if (S.view === 'submissions' && !$('#modal-root').innerHTML) render(); else clearInterval(S.linkPoll); }, 15000); }
 };
 
 // ---------------------------------------------------------------- Settings (tabs: Tuning · Setup · Accounts · Stats)

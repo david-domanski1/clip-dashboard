@@ -941,7 +941,25 @@ def _post_full(p: dict) -> dict:
             pass
     p["campaign"] = {k: camp.get(k) for k in ("id", "name", "submission_url", "submit_minutes", "pay_model", "rate_per_1k", "per_clip_cap", "pool_budget", "min_views")} if camp else None
     p["earnings_estimate"] = runner.estimate_earnings(camp, int(p.get("views") or 0)) if camp else 0
+    p["link_state"] = runner.link_poll_state(p)          # 'pending' | 'gave_up' | None
+    handle = (acct or {}).get("handle") or ""
+    p["profile_url"] = _profile_url(p["platform"], handle)
+    dl = p.get("submission_deadline")
+    p["missed"] = bool(dl and not p.get("submitted_at") and datetime.fromisoformat(dl) <= datetime.now(timezone.utc))
     return p
+
+
+def _profile_url(platform: str, handle: str) -> str:
+    h = handle.lstrip("@")
+    if platform == "tiktok":
+        return f"https://www.tiktok.com/@{h}" if h else "https://www.tiktok.com/"
+    if platform == "instagram":
+        return f"https://www.instagram.com/{h}/" if h else "https://www.instagram.com/"
+    if platform == "youtube":
+        return f"https://www.youtube.com/@{h}" if h else "https://studio.youtube.com/"
+    if platform == "x":
+        return f"https://x.com/{h}" if h else "https://x.com/"
+    return ""
 
 
 @app.get("/api/posts")

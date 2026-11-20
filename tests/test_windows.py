@@ -65,7 +65,7 @@ def test_add_video_gate_and_skip_then_override(fresh_db, campaign, monkeypatch):
     assert v["status"] in ("scanned", "done", "rendering") and v["scanned_ranges"] == [[0.0, 1000.0]]
 
 
-def test_skipped_videos_hidden_from_pipeline_and_revealed_by_toggle(fresh_db, campaign):
+def test_skipped_videos_hidden_from_pipeline_and_revealed_by_toggle(fresh_db, campaign, monkeypatch):
     from fastapi.testclient import TestClient
     from clipdash import db
     from clipdash.app import app
@@ -83,8 +83,7 @@ def test_skipped_videos_hidden_from_pipeline_and_revealed_by_toggle(fresh_db, ca
         skipped = c.get(f"/api/videos/skipped?campaign_id={campaign['id']}").json()
         assert {v["id"] for v in skipped} == {old, legacy}
         assert all(v["status"] == "skipped" for v in skipped)
-        import clipdash.jobs
-        clipdash.jobs.enqueue = lambda *a, **k: 1
+        monkeypatch.setattr("clipdash.jobs.enqueue", lambda *a, **k: 1)
         r = c.post(f"/api/videos/{old}/rescan", json={"window": "last2h", "override": True})
         assert r.status_code == 200 and db.get("videos", old)["status"] == "queued" and db.get("videos", old)["override"] == 1
         assert old in [v["id"] for v in c.get(f"/api/videos?campaign_id={campaign['id']}").json()]

@@ -89,15 +89,14 @@ def test_api_locks_narration_and_sets_synthetic_on_posts(client, fresh_db, campa
     assert r.status_code == 200 and not r.json()["narration"]["enabled"] and r.json()["ai_text"] == 0
 
 
-def test_workspace_clip_can_use_narration(client, fresh_db):
+def test_workspace_clip_can_use_narration(client, fresh_db, monkeypatch):
     from clipdash import db
     ws = db.ensure_workspace()
     vid = db.insert("videos", {"campaign_id": ws["id"], "platform": "youtube", "external_id": "x", "url": "u", "status": "done"})
     cid = db.insert("clips", {"video_id": vid, "campaign_id": ws["id"], "path": "/nonexistent.mp4", "source_start": 0, "source_length": 90,
                               "duration": 40.0, "trim_start": 0, "trim_end": 40.0, "width": 1080, "height": 1920, "status": "pending",
                               "post_text": {"tiktok": {"title": "", "text": "Speed — clip from IShowSpeed (@IShowSpeed)"}}})
-    import clipdash.jobs
-    clipdash.jobs.enqueue = lambda *a, **k: 1
+    monkeypatch.setattr("clipdash.jobs.enqueue", lambda *a, **k: 1)
     r = client.put(f"/api/clips/{cid}/narration", json={"hook": "He walked straight into the ocean.", "enabled": True})
     assert r.status_code == 200 and r.json()["narration"]["enabled"]
 

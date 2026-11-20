@@ -82,12 +82,31 @@ def publish_post(post_id: int, progress) -> None:
 
 def check_post(post_id: int, progress) -> None:
     post = db.get("posts", post_id)
-    if not post or post["status"] in ("live", "failed", "cancelled", "manual"):
+    if not post or post["status"] in ("failed", "cancelled", "manual"):
+        return
+    if post["status"] == "live" and post.get("url"):
         return
     account = db.get("accounts", post["account_id"])
     res = get_publisher(account).check(post)
     if res:
+        if post["status"] == "live" and res.status != "live":
+            # Never demote a live post because a later poll says something else; only pick up the link.
+            if res.url:
+                db.update("posts", post_id, {"url": res.url, "state_detail": "Published by the service"})
+            return
         apply_result(post, res)
+
+
+def link_poll_state(post: dict) -> str | None:
+    """'pending' while the service may still deliver the post link, 'gave_up' after the polling window, None otherwise."""
+    from .service import LINK_POLL_MINUTES
+    if post.get("status") != "live" or post.get("url") or post.get("route") != "service" or not post.get("external_id"):
+        return None
+    posted = post.get("posted_at")
+    if not posted:
+        return "gave_up"
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(posted)
+    return "pending" if age < timedelta(minutes=LINK_POLL_MINUTES) else "gave_up"
 
 
 def refresh_stats(progress, campaign_id: int | None = None) -> None:

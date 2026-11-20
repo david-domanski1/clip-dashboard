@@ -7,6 +7,10 @@ Read from docs.zernio.com on 2026-11-19 (not exercised against a live key: see R
 
 Flow: POST /v1/media/presign → PUT bytes → POST /v1/posts {content, mediaItems, platforms[{platform, accountId,
 platformSpecificData}], publishNow | scheduledFor+timezone} → GET /v1/posts/{id} for platformPostUrl → GET /v1/analytics.
+
+Confirmed live on 2026-11-19: the create/first-check response can say platforms[].status == "published" before
+platforms[].platformPostUrl is filled in; the URL appears on GET /posts/{id} shortly after. The scheduler therefore polls
+live service posts without a link every 30 s for up to 15 minutes (LINK_POLL_SECONDS / LINK_POLL_MINUTES).
 """
 from __future__ import annotations
 
@@ -20,6 +24,8 @@ from .. import db, secrets_store
 from .base import Publisher, PublishResult, is_dry_run
 
 DEFAULT_BASE = "https://zernio.com/api/v1"
+LINK_POLL_SECONDS = 30
+LINK_POLL_MINUTES = 15
 
 
 def _base() -> str:
@@ -141,7 +147,8 @@ class ServiceBase(Publisher):
         st = (plat.get("status") or postobj.get("status") or "").lower()
         url = plat.get("platformPostUrl")
         if st in ("published",) or url:
-            return PublishResult(status="live", external_id=pid, url=url, detail="Published by the service")
+            return PublishResult(status="live", external_id=pid, url=url,
+                                 detail="Published by the service" if url else "Posted, fetching link…")
         if st in ("failed", "cancelled"):
             return PublishResult(status="failed", external_id=pid, detail=plat.get("errorMessage") or "Service reported failure")
         if scheduled or st == "scheduled":

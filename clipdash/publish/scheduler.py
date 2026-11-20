@@ -10,6 +10,7 @@ from .. import db, jobs
 
 _stop = threading.Event()
 _last = {"watch": 0.0, "stats": 0.0, "check": 0.0}
+_link_checks: dict[int, float] = {}
 
 
 def _now() -> datetime:
@@ -40,6 +41,17 @@ def tick() -> None:
         _last["check"] = time.time()
         for post in db.rows("posts", "status IN ('pending','draft')"):
             jobs.enqueue("check_post", {"post_id": post["id"]})
+    # 2b. live service posts whose platform link has not arrived yet: poll every 30 s for 15 min
+    from .runner import link_poll_state
+    from .service import LINK_POLL_SECONDS
+    for post in db.rows("posts", "status='live' AND (url IS NULL OR url='') AND route='service'"):
+        state = link_poll_state(post)
+        if state == "pending" and time.time() - _link_checks.get(post["id"], 0) >= LINK_POLL_SECONDS:
+            _link_checks[post["id"]] = time.time()
+            if not db.one("jobs", "type='check_post' AND status IN ('queued','running') AND payload LIKE ?", (f'%"post_id": {post["id"]}%',)):
+                jobs.enqueue("check_post", {"post_id": post["id"]})
+        elif state == "gave_up" and post.get("state_detail") != "No link from the service":
+            db.update("posts", post["id"], {"state_detail": "No link from the service"})
     # 3. watch sources
     interval = float(db.get_setting("watch_interval_min", 30)) * 60
     if time.time() - _last["watch"] > interval:
