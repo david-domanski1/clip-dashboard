@@ -67,6 +67,66 @@ def state():
     }
 
 
+@app.get("/api/today")
+def today(campaign_id: int | None = None):
+    """The Today checklist: what is waiting for the person, in the order of the day's work."""
+    campaign = db.get("campaigns", campaign_id) if campaign_id else None
+    cw, params = ("campaign_id=?", (campaign_id,)) if campaign_id else ("1=1", ())
+    pending = db.rows("clips", f"{cw} AND status='pending'", params, order="id DESC")
+    best = None
+    if pending:
+        def _score(c):
+            m = db.get("moments", c["moment_id"]) if c.get("moment_id") else None
+            return float((m or {}).get("score") or 0)
+        b = max(pending, key=_score)
+        best = {"id": b["id"], "hook": b.get("hook") or b.get("title") or "", "source_start": b.get("source_start"),
+                "thumb_url": f"/media/thumb/{b['id']}" if b.get("thumb") and Path(b["thumb"]).exists() else None}
+    approved = db.execute(f"SELECT COUNT(*) c FROM clips WHERE {cw} AND status='approved'", params).fetchone()["c"]
+    due = db.rows("posts", f"{cw} AND status='live' AND submitted_at IS NULL AND submission_deadline IS NOT NULL", params,
+                  order="submission_deadline")
+    srcs = []
+    for s in db.rows("sources", f"{cw} AND watch=1", params, order="id"):
+        live = db.execute("SELECT COUNT(*) c FROM videos WHERE source_id=? AND live=1 AND status NOT IN ('done','error','skipped')",
+                          (s["id"],)).fetchone()["c"]
+        srcs.append({"id": s["id"], "name": s.get("name") or s["url"], "kind": s["kind"], "live": bool(live),
+                     "last_checked": s.get("last_checked")})
+    attention = []
+    active_job = lambda t, key, val: db.one("jobs", f"type='{t}' AND status IN ('queued','running') AND payload LIKE ?", (f'%"{key}": {val}%',))
+    for v in db.rows("videos", f"{cw} AND status IN ('error','scanning','queued')", params, order="id DESC"):
+        if v["status"] == "error":
+            attention.append({"kind": "video", "id": v["id"], "title": v.get("title") or v["url"], "reason": _reason(v.get("error")),
+                              "retry": f"/api/videos/{v['id']}/rescan"})
+        elif not active_job("scan_video", "video_id", v["id"]):
+            attention.append({"kind": "video", "id": v["id"], "title": v.get("title") or v["url"], "reason": "Interrupted — retry",
+                              "retry": f"/api/videos/{v['id']}/rescan"})
+    for c in db.rows("clips", f"{cw} AND status IN ('error','rendering')", params, order="id DESC"):
+        video = db.get("videos", c["video_id"]) or {}
+        title = c.get("hook") or c.get("title") or f"{video.get('title') or 'clip'} at {_fmt(c.get('source_start') or 0)}"
+        if c["status"] == "error":
+            attention.append({"kind": "clip", "id": c["id"], "title": title, "reason": _reason(c.get("error")), "retry": f"/api/clips/{c['id']}/rerender"})
+        elif not active_job("render_clip", "clip_id", c["id"]):
+            attention.append({"kind": "clip", "id": c["id"], "title": title, "reason": "Interrupted — retry", "retry": f"/api/clips/{c['id']}/rerender"})
+    for p in db.rows("posts", f"{cw} AND status='failed'", params, order="id DESC"):
+        clip = db.get("clips", p["clip_id"]) or {}
+        attention.append({"kind": "post", "id": p["id"], "title": f"{p['platform']}: {clip.get('hook') or p.get('title') or ''}",
+                          "reason": _reason(p.get("error") or p.get("state_detail")), "retry": f"/api/posts/{p['id']}/retry"})
+    for j in db.rows("jobs", "status='error' AND type NOT IN ('scan_video','render_clip','publish_post','finalize_clip')", (), order="id DESC")[:5]:
+        attention.append({"kind": "job", "id": j["id"], "title": j["type"].replace("_", " "), "reason": _reason(j.get("error")),
+                          "retry": f"/api/jobs/{j['id']}/retry"})
+    return {
+        "review": {"count": len(pending), "best": best}, "publish": {"count": approved},
+        "submissions": {"count": len(due), "soonest": due[0]["submission_deadline"] if due else None, "soonest_post_id": due[0]["id"] if due else None},
+        "sources": srcs, "attention": attention,
+        "workspace": bool(campaign and campaign.get("kind") == "streamer"),
+    }
+
+
+def _reason(err) -> str:
+    """One line for the UI; the raw text stays on the row."""
+    line = (str(err or "").strip().splitlines() or ["No reason was recorded"])[0]
+    return line[:200]
+
+
 @app.get("/api/setup/checks")
 def setup_checks():
     llm_ok, llm_why = hooks.available()

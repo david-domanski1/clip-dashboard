@@ -10,8 +10,12 @@ def client(fresh_db):
         yield c
 
 
+_n = [0]
+
+
 def make_clip(db, campaign, **over):
-    vid = db.insert("videos", {"campaign_id": campaign["id"], "platform": "youtube", "external_id": "abc", "url": "u",
+    _n[0] += 1
+    vid = db.insert("videos", {"campaign_id": campaign["id"], "platform": "youtube", "external_id": f"abc{_n[0]}", "url": "u",
                                "published_at": "2026-11-19T00:00:00+00:00", "status": "done"})
     data = {"video_id": vid, "campaign_id": campaign["id"], "path": "/nonexistent.mp4", "source_start": 0, "source_length": 90,
             "duration": 80.0, "trim_start": 0, "trim_end": 70.0, "width": 1080, "height": 1920, "status": "pending", "hook": "LACY loses it.",
@@ -83,3 +87,23 @@ def test_posted_clip_is_locked(client, fresh_db, campaign):
     cid = make_clip(fresh_db, campaign, status="posted")
     assert client.put(f"/api/clips/{cid}", json={"hook": "x"}).status_code == 400
     assert client.delete(f"/api/clips/{cid}").status_code == 409
+
+
+def test_today_checklist_counts_and_attention(client, fresh_db, campaign):
+    pending = make_clip(fresh_db, campaign)
+    make_clip(fresh_db, campaign, status="approved")
+    broken = make_clip(fresh_db, campaign, status="error", error="ToolError: ffmpeg failed:\nsomething")
+    stuck = make_clip(fresh_db, campaign, status="rendering")  # no job behind it → interrupted
+    fresh_db.update("videos", fresh_db.get("clips", pending)["video_id"], {"status": "error", "error": "Scan failed"})
+    sid = fresh_db.insert("sources", {"campaign_id": campaign["id"], "kind": "twitch_channel", "url": "https://twitch.tv/lacy", "external_id": "lacy", "name": "LACY", "watch": 1})
+    fresh_db.insert("videos", {"campaign_id": campaign["id"], "source_id": sid, "platform": "twitch", "external_id": "live1", "url": "u2", "status": "scanning", "live": 1})
+    t = client.get(f"/api/today?campaign_id={campaign['id']}").json()
+    assert t["review"]["count"] == 1 and t["review"]["best"]["id"] == pending
+    assert t["publish"]["count"] == 1
+    assert t["sources"][0]["name"] == "LACY" and t["sources"][0]["live"] is True
+    kinds = {(a["kind"], a["id"]): a for a in t["attention"]}
+    assert kinds[("clip", broken)]["reason"] == "ToolError: ffmpeg failed:" and kinds[("clip", broken)]["retry"].endswith("/rerender")
+    assert kinds[("clip", stuck)]["reason"].startswith("Interrupted")
+    assert any(a["kind"] == "video" for a in t["attention"])
+    # the live video is scanning with no job behind it, so it is also flagged as interrupted
+    assert t["submissions"]["count"] == 0 and t["submissions"]["soonest"] is None

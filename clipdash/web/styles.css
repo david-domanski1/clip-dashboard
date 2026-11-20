@@ -143,3 +143,23 @@ details summary{cursor:pointer;color:var(--teal);font-weight:600}
 .mthumb{width:64px;height:36px;border-radius:6px;background:#000 center/cover no-repeat;flex:none;border:1px solid var(--line)}
 .moment.flagged{opacity:.55}
 .moment.flagged .score{color:var(--muted)}
+
+/* Today checklist */
+.steps{display:flex;flex-direction:column;gap:12px;max-width:900px}
+.step{display:grid;grid-template-columns:40px 1fr auto;gap:14px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px}
+.step.done{opacity:.7}
+.step.warn{border-color:var(--yellow)}
+.step-n{width:34px;height:34px;border-radius:50%;background:var(--panel2);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-weight:800}
+.step.warn .step-n{background:var(--yellow);color:#1a0b3a;border-color:transparent}
+.step-title{font-weight:700;font-size:15px}
+.step-title .count{margin-left:6px;background:var(--line);border-radius:999px;padding:0 8px;font-size:12px}
+.step:not(.done) .step-title .count{background:var(--pink);color:#fff}
+.step-sub{color:var(--muted);font-size:13px;margin-top:4px}
+.step-sub .countdown{font-size:15px}
+.best-thumb{width:54px;height:96px;border-radius:8px;background:#000 center/cover no-repeat;border:1px solid var(--line);flex:none}
+.attn{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:4px 0;color:var(--text)}
+.live-badge,.live-dot{background:var(--red);color:#fff;font-weight:800;border-radius:6px;padding:1px 6px;font-size:11px;letter-spacing:.04em}
+.source-card+.source-card{margin-top:14px}
+.tabs a{padding:8px 12px;color:var(--muted);border-bottom:2px solid transparent;font-weight:600}
+.tabs a.on{color:var(--text);border-bottom-color:var(--pink)}
+@media (max-width:700px){.step{grid-template-columns:34px 1fr}.step>.btn{grid-column:2}}

@@ -48,7 +48,9 @@ function confirmDlg(msg, okLabel = 'Continue') {
 }
 
 // ---------------------------------------------------------------- state & routing
-const S = { campaigns: [], campaignId: Number(localStorage.getItem('campaignId')) || null, state: null, view: 'home', timer: null, tick: null };
+const S = { campaigns: [], campaignId: Number(localStorage.getItem('campaignId')) || null, state: null, today: null, view: 'home', timer: null, tick: null, openSources: {} };
+// Old links keep working: Pipeline lives inside Sources; Setup, Accounts and Stats are Settings tabs.
+const ALIASES = { videos: 'sources', setup: 'settings/setup', accounts: 'settings/accounts', stats: 'settings/stats' };
 const campaign = () => S.campaigns.find((c) => c.id === S.campaignId) || S.campaigns[0] || null;
 
 async function loadCampaigns() {
@@ -68,10 +70,14 @@ async function refreshState() {
     S.state = await get('/api/state');
     const st = S.state;
     $('#brand-sub').textContent = 'v' + st.version;
+    const c = campaign();
+    try { S.today = await get(`/api/today${c ? '?campaign_id=' + c.id : ''}`); } catch (e) { S.today = null; }
+    const t = S.today;
     $('#pill-videos').textContent = st.videos_in_progress || '';
-    $('#pill-review').textContent = st.clips_to_review || '';
-    $('#pill-publish').textContent = st.clips_approved || '';
-    $('#pill-subs').textContent = st.submissions_due || '';
+    $('#pill-review').textContent = (t ? t.review.count : st.clips_to_review) || '';
+    $('#pill-publish').textContent = (t ? t.publish.count : st.clips_approved) || '';
+    $('#pill-subs').textContent = (t ? t.submissions.count : st.submissions_due) || '';
+    $('#pill-attention').textContent = (t && t.attention.length) || '';
     $('#dry-run-flag').classList.toggle('hidden', !st.dry_run);
     $('#jobs-mini').innerHTML = st.jobs_running.length ? st.jobs_running.map((j) => `<div>⟳ ${esc(j.type.replace('_', ' '))} ${Math.round(j.progress * 100)}%<br><span class="small">${esc(j.message)}</span></div>`).join('') + (st.jobs_queued ? `<div>${st.jobs_queued} queued</div>` : '') : `<div>Idle${st.jobs_queued ? ' · ' + st.jobs_queued + ' queued' : ''}</div>`;
     const d = st.disk;
@@ -81,8 +87,11 @@ async function refreshState() {
 
 const VIEWS = {};
 async function render() {
-  const hash = location.hash.replace(/^#\/?/, '') || 'home';
-  const [view, arg] = hash.split('/');
+  let hash = location.hash.replace(/^#\/?/, '') || 'home';
+  const first = hash.split('/')[0];
+  if (ALIASES[first]) { hash = ALIASES[first] + hash.slice(first.length); }
+  const [view, ...rest] = hash.split('/');
+  const arg = rest.join('/');
   S.view = view;
   $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === view));
   const cw = campaign(); $('#nav a[data-view="submissions"]').classList.toggle('hidden', !!(cw && cw.workspace));
@@ -94,45 +103,51 @@ window.addEventListener('hashchange', render);
 async function boot() {
   await refreshState();
   await loadCampaigns();
-  if (!S.state.setup_done && !location.hash.includes('setup')) location.hash = '#/setup';
+  if (!S.state.setup_done && !location.hash.includes('setup')) location.hash = '#/settings/setup';
   await render();
   setInterval(async () => {
     await refreshState();
-    if (S.state && (S.state.jobs_running.length || S.state.jobs_queued) && ['videos', 'review', 'publish', 'home', 'setup', 'accounts'].includes(S.view) && !$('#modal-root').innerHTML) render();
+    if (S.state && (S.state.jobs_running.length || S.state.jobs_queued) && ['sources', 'review', 'publish', 'home', 'settings'].includes(S.view) && !$('#modal-root').innerHTML) render();
   }, 4000);
 }
 
-// ---------------------------------------------------------------- Overview
+// ---------------------------------------------------------------- Today
 VIEWS.home = async (el) => {
-  const st = S.state || await get('/api/state');
   const c = campaign();
+  if (!c) { el.innerHTML = noCampaign(); return; }
+  const t = await get(`/api/today?campaign_id=${c.id}`);
+  S.today = t;
+  const soon = t.submissions.soonest ? (new Date(t.submissions.soonest) - Date.now()) / 1000 : null;
+  const step = (n, title, count, body, btn, href, extra = '') => `
+    <div class="step ${count ? '' : 'done'} ${extra}">
+      <div class="step-n">${n}</div>
+      <div class="step-body"><div class="step-title">${esc(title)} <b class="count">${count}</b></div><div class="step-sub">${body}</div></div>
+      <a class="btn ${count ? 'primary' : ''}" href="${href}">${esc(btn)}</a>
+    </div>`;
+  const best = t.review.best;
   el.innerHTML = `
-    <h1>Overview</h1><p class="sub">Clips are the product. Everything else is here to keep the campaign safe.</p>
-    <div class="stat-tiles">
-      <div class="tile teal"><div class="n">${st.clips_to_review}</div><div class="l">clips to review</div></div>
-      <div class="tile pink"><div class="n">${st.clips_approved}</div><div class="l">approved, ready to post</div></div>
-      <div class="tile yellow"><div class="n">${st.posts_scheduled}</div><div class="l">scheduled posts</div></div>
-      <div class="tile"><div class="n">${st.submissions_due}</div><div class="l">submissions pending</div></div>
-      <div class="tile"><div class="n">${st.videos_in_progress}</div><div class="l">videos in the pipeline</div></div>
-      <div class="tile"><div class="n">${fmtBytes(st.disk.free_bytes)}</div><div class="l">disk free</div></div>
-    </div>
-    <h2>Campaigns</h2>
-    <div class="grid cols-3" id="camp-cards"></div>
-    <h2>Running now</h2>
-    <div class="panel" id="jobs-panel"></div>`;
-  $('#camp-cards').innerHTML = S.campaigns.map((c) => `
-    <div class="panel" style="cursor:pointer" data-id="${c.id}">
-      <div class="row between"><b>${esc(c.name)}</b> ${c.workspace ? '<span class="badge teal">no campaign</span>' : (c.active ? '<span class="badge ok">active</span>' : '<span class="badge">paused</span>')}</div>
-      <div class="muted small">${c.workspace ? 'Streamers who publicly allow clipping · no rules, no submissions · ' + (c.platforms || []).join(', ') : esc(c.creator) + ' · ' + (c.platforms || []).join(', ') + ' · ≥' + c.min_len + 's · submit within ' + c.submit_minutes + ' min'}</div>
-      <div class="row small" style="margin-top:8px;gap:14px"><span>${c.counts.sources} sources</span><span>${c.counts.videos} videos</span><span>${c.counts.pending} to review</span><span>${c.counts.approved} approved</span><span>${c.counts.posted} live</span></div>
-      <div class="row" style="margin-top:10px">${c.workspace ? '' : `<button class="btn sm" data-edit="${c.id}">Edit rules</button>`}${c.url ? `<a class="btn sm ghost" href="${esc(c.url)}" target="_blank">Campaign page</a>` : ''}</div>
-    </div>`).join('') + `<div class="panel" style="cursor:pointer;border-style:dashed;display:flex;align-items:center;justify-content:center" id="new-camp">+ New campaign</div>`;
-  $$('#camp-cards [data-edit]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); openCampaignEditor(S.campaigns.find((x) => x.id === Number(b.dataset.edit))); });
-  $$('#camp-cards .panel[data-id]').forEach((p) => p.onclick = () => { S.campaignId = Number(p.dataset.id); localStorage.setItem('campaignId', S.campaignId); loadCampaigns(); location.hash = '#/videos'; });
-  $('#new-camp').onclick = () => openCampaignEditor();
-  const jobs = await get('/api/jobs?limit=12');
-  $('#jobs-panel').innerHTML = jobs.length ? `<table><tr><th>Job</th><th>Status</th><th>Progress</th><th></th></tr>${jobs.map((j) => `<tr><td>${esc(j.type.replace(/_/g, ' '))} <span class="muted small">#${j.id}</span><br><span class="small muted">${esc(j.message || '')}</span>${j.error ? `<br><span class="small bad-text">${esc(j.error.slice(0, 300))}</span>` : ''}</td><td><span class="badge ${j.status}">${j.status}</span></td><td style="width:160px"><div class="progress"><i style="width:${Math.round(j.progress * 100)}%"></i></div></td><td>${j.status === 'error' ? `<button class="btn sm" data-retry="${j.id}">Retry</button>` : ''}</td></tr>`).join('')}</table>` : '<div class="muted">Nothing running.</div>';
-  $$('#jobs-panel [data-retry]').forEach((b) => b.onclick = () => post(`/api/jobs/${b.dataset.retry}/retry`).then(render));
+    <h1>Today</h1><p class="sub">${esc(c.name)} · work through the list top to bottom.</p>
+    <div class="steps">
+      ${step(1, 'Clips waiting for you', t.review.count,
+        best ? `<div class="row"><div class="best-thumb" style="background-image:url('${best.thumb_url || ''}')"></div><div>Best one: <b>${esc(best.hook || 'untitled')}</b><br><span class="muted small">from ${fmtTime(best.source_start)}</span></div></div>`
+             : 'Nothing to review. Scan a video or pick a moment to render under Sources.',
+        t.review.count ? 'Review' : 'Find moments', t.review.count ? '#/review' : '#/sources')}
+      ${step(2, 'Approved, not posted', t.publish.count, t.publish.count ? 'Post now or schedule each approved clip.' : 'Everything approved has been posted.', 'Publish', '#/publish')}
+      ${t.workspace ? '' : step(3, 'Posted, not submitted', t.submissions.count,
+        t.submissions.count ? `Soonest deadline in <span class="countdown ${soon !== null && soon < 600 ? 'late' : ''}" data-dl="${esc(t.submissions.soonest)}"></span>` : 'Every live post has been submitted.',
+        'Submissions', '#/submissions')}
+      ${step(t.workspace ? 3 : 4, 'Streams being watched', t.sources.length,
+        t.sources.length ? t.sources.map((s) => `<span class="chip">${s.live ? '<b class="live-dot">LIVE</b> ' : ''}${esc(s.name)}</span>`).join(' ') : 'No channel is watched yet. Add one under Sources.',
+        'Sources', '#/sources')}
+      <div class="step ${t.attention.length ? 'warn' : 'done'}">
+        <div class="step-n">!</div>
+        <div class="step-body"><div class="step-title">Needs attention <b class="count">${t.attention.length}</b></div>
+          <div class="step-sub">${t.attention.length ? t.attention.map((a) => `<div class="attn"><span><b>${esc(a.title)}</b> — ${esc(a.reason)}</span><button class="btn sm" data-retry="${esc(a.retry)}" data-kind="${a.kind}">Retry</button></div>`).join('') : 'Nothing failed or stuck.'}</div></div>
+      </div>
+    </div>`;
+  $$('[data-retry]', el).forEach((b) => b.onclick = async () => { b.disabled = true; try { await post(b.dataset.retry, b.dataset.kind === 'video' ? { override: true } : {}); toast('Retrying'); render(); } catch (e) { toastErr(e); b.disabled = false; } });
+  const cd = $('.countdown[data-dl]', el);
+  if (cd) { const tick = () => { const left = (new Date(cd.dataset.dl) - Date.now()) / 1000; cd.textContent = (left < 0 ? '-' : '') + fmtTime(Math.abs(left)); cd.classList.toggle('late', left < 600); }; tick(); clearInterval(S.tick); S.tick = setInterval(tick, 1000); }
 };
 
 // ---------------------------------------------------------------- Campaign editor
@@ -221,68 +236,96 @@ function openCampaignEditor(c = null) {
   if (c) $('#f-del', m).onclick = async () => { if (await confirmDlg(`Delete campaign "${c.name}" with all its sources, videos, clips and posts?`, 'Delete')) { await del(`/api/campaigns/${c.id}`); closeModal(); await loadCampaigns(); render(); } };
 }
 
-// ---------------------------------------------------------------- Sources
-VIEWS.sources = async (el) => {
+// ---------------------------------------------------------------- Sources (channels, single videos, and each video's moments)
+VIEWS.sources = async (el, arg) => {
   const c = campaign();
   if (!c) { el.innerHTML = noCampaign(); return; }
-  const [srcs, sugg] = await Promise.all([get(`/api/campaigns/${c.id}/sources`), get('/api/suggestions')]);
+  if (arg) S.openSources[Number(arg)] = true;
+  const [srcs, sugg, vids, skipped] = await Promise.all([get(`/api/campaigns/${c.id}/sources`), get('/api/suggestions'), get(`/api/videos?campaign_id=${c.id}`), get(`/api/videos/skipped?campaign_id=${c.id}`)]);
+  const bySource = (id) => vids.filter((v) => v.source_id === id);
+  const loose = vids.filter((v) => !v.source_id || !srcs.some((s) => s.id === v.source_id));
   el.innerHTML = `
-    <h1>Sources · ${esc(c.name)}</h1><p class="sub">Channels are watched for new GTA VI videos; single videos are scanned once. Only sources attached to a campaign are processed.</p>
+    <h1>Sources · ${esc(c.name)}</h1><p class="sub">Channels are watched for new GTA VI videos; a single video URL is scanned once. Open a source to see its videos and the moments found in each.</p>
     ${c.workspace ? `<div class="callout teal"><b>Streamer clips (no campaign).</b> Only creators who publicly allow clipping (a !clipping program, clip-friendly terms). Clips here follow no campaign rules and have no submission tracker; captions credit the streamer by name and handle. A creator who has an active campaign in this app must be clipped inside that campaign.</div>` : ''}
     <div class="panel">
-      <div class="field"><label>Add a YouTube channel (youtube.com/@name), Twitch channel (twitch.tv/name), or a single video URL</label>
-        <div class="row"><input type="text" id="src-url" placeholder="https://www.youtube.com/@IShowSpeed  ·  https://www.twitch.tv/caseoh_  ·  https://www.youtube.com/watch?v=…"><button class="btn primary" id="src-add" ${c.workspace ? 'disabled' : ''}>Add</button></div></div>
+      <div class="field"><label>Add a YouTube channel (youtube.com/@name), Twitch channel (twitch.tv/name), or a single video URL (a stream still in progress works too)</label>
+        <div class="row"><input type="text" id="src-url" placeholder="https://www.twitch.tv/lacy  ·  https://www.youtube.com/@IShowSpeed  ·  https://www.twitch.tv/videos/…" style="flex:1;min-width:260px"><span class="row" id="src-win"><span class="small muted">Scan window:</span>${windowControls('new')}</span><button class="btn primary" id="src-add" ${c.workspace ? 'disabled' : ''}>Add</button></div></div>
       ${c.workspace ? `<label class="check"><input type="checkbox" id="src-consent"> This creator publicly allows clipping (e.g. a !clipping program or clip-friendly terms)</label>
         <div class="row" style="margin-top:6px"><input type="text" id="src-terms" placeholder="Link to their clipping terms / program page (optional)" style="flex:1"></div>` : ''}
-      <div class="row small muted">Suggestions:</div>
-      <div class="chips" style="margin-top:6px">${sugg.map((s) => `${s.youtube ? `<span class="chip" data-url="https://www.youtube.com/${s.youtube}">▶ ${esc(s.name)} (YouTube)</span>` : ''}${s.twitch ? `<span class="chip" data-url="https://www.twitch.tv/${s.twitch}">⌁ ${esc(s.name)} (Twitch)</span>` : ''}`).join('')}</div>
-      <div class="small muted" style="margin-top:8px">Channels are resolved by lookup when added (no hardcoded IDs). Many streamers keep edited highlights on one channel and full streams on another or on the channel's Live tab; both tabs are checked.</div>
+      <div class="row small muted" style="margin-top:8px">Suggestions:
+        ${sugg.map((s) => `${s.youtube ? `<span class="chip" data-url="https://www.youtube.com/${s.youtube}">▶ ${esc(s.name)} (YouTube)</span>` : ''}${s.twitch ? `<span class="chip" data-url="https://www.twitch.tv/${s.twitch}">⌁ ${esc(s.name)} (Twitch)</span>` : ''}`).join('')}</div>
+      <div class="small muted" style="margin-top:8px">Long VODs default to their last 2 hours (clips in about 2 minutes); "Scan the rest" continues in 2-hour chunks. Videos published before the campaign's footage start (${esc((c.source_start || 'not set').slice(0, 10))}) are skipped unless you override.</div>
     </div>
-    <div class="grid cols-2" style="margin-top:14px" id="src-list">${srcs.length ? '' : '<div class="empty">No sources yet. Add a channel or paste a video URL.</div>'}</div>`;
+    <div id="src-list" style="margin-top:14px">${srcs.length || loose.length ? '' : '<div class="empty">No sources yet. Paste a channel or video URL above, or pick a suggestion.</div>'}</div>
+    ${skipped.length ? `<div style="margin-top:10px"><button class="btn sm ghost" id="v-toggle-skipped">${S.showSkipped ? 'Hide' : 'Show'} skipped (${skipped.length})</button>
+      <div class="panel ${S.showSkipped ? '' : 'hidden'}" id="v-skipped" style="margin-top:8px"><div class="small muted" style="margin-bottom:6px">Published outside the campaign's footage window, so not scanned. "Scan anyway" overrides for that video.</div></div></div>` : ''}`;
+  wireWindow(el, 'new');
+  const tog = $('#v-toggle-skipped'); if (tog) tog.onclick = () => { S.showSkipped = !S.showSkipped; render(); };
   const consent = () => !c.workspace || ($('#src-consent') && $('#src-consent').checked);
   if (c.workspace) $('#src-consent').onchange = () => { $('#src-add').disabled = !consent(); };
   const add = async (url) => {
+    if (!url) return;
     if (!consent()) return toast('Tick the clipping-allowed box first', 'warn');
+    const w = readWindow(el, 'new'); if (w === null) return;
     const btn = $('#src-add'); btn.disabled = true; btn.textContent = 'Resolving…';
-    try { const r = await post('/api/sources', { campaign_id: c.id, url, clip_terms_ok: consent(), terms_url: c.workspace ? $('#src-terms').value.trim() : undefined }); toast(r.video ? 'Video queued for scanning' : `Added ${r.source.name}`); if (r.video) location.hash = '#/videos'; else render(); }
-    catch (e) { if (e.status === 409 && e.data && e.data.campaign_id) { toast(e.data.message, 'warn'); } else toastErr(e); }
+    try {
+      const r = await post('/api/sources', { campaign_id: c.id, url, clip_terms_ok: consent(), terms_url: c.workspace ? $('#src-terms').value.trim() : undefined, window: w });
+      toast(r.video ? 'Video queued for scanning' : `Added ${r.source.name}`); $('#src-url').value = ''; render();
+    } catch (e) { if (e.status === 409 && e.data && e.data.campaign_id) { toast(e.data.message, 'warn'); } else toastErr(e); }
     finally { btn.disabled = !consent(); btn.textContent = 'Add'; }
   };
   $('#src-add').onclick = () => add($('#src-url').value.trim());
   $('#src-url').onkeydown = (e) => { if (e.key === 'Enter') add(e.target.value.trim()); };
   $$('.chip[data-url]').forEach((ch) => ch.onclick = () => { $('#src-url').value = ch.dataset.url; add(ch.dataset.url); });
   const list = $('#src-list');
-  for (const s of srcs) {
-    const d = document.createElement('div'); d.className = 'panel';
+  for (const src of srcs) {
+    const d = document.createElement('div'); d.className = 'panel source-card';
+    const svids = bySource(src.id);
+    const busy = svids.filter((v) => ['queued', 'scanning', 'rendering'].includes(v.status)).length;
+    const pending = svids.reduce((n, v) => n + ((v.clip_counts || {}).pending || 0), 0);
+    const open = S.openSources[src.id] ?? (srcs.length <= 2);
     d.innerHTML = `
-      <div class="row between"><div><b>${esc(s.name || s.url)}</b> <span class="badge">${s.kind.replace('_', ' ')}</span></div>
-        <label class="check small"><input type="checkbox" ${s.watch ? 'checked' : ''} data-watch> watch for new videos</label></div>
-      <div class="small muted"><a href="${esc(s.url)}" target="_blank">${esc(s.url)}</a> · ${s.video_count} videos · last checked ${s.last_checked ? fmtDate(s.last_checked) : 'never'}${s.clip_terms_ok ? ' · <span class="ok-text">clipping allowed ✓</span>' : ''}${s.terms_url ? ` · <a href="${esc(s.terms_url)}" target="_blank">clipping terms ↗</a>` : ''}</div>
-      ${c.workspace ? `<div class="row" style="margin-top:8px"><input type="text" data-terms value="${esc(s.terms_url || '')}" placeholder="Clipping terms URL" style="width:260px"><input type="text" data-template value="${esc(s.caption_template || '')}" placeholder="Caption template: {hook} — clip from {creator}'s stream ({handle})" style="flex:1"><button class="btn sm" data-save-ws>Save</button></div>` : ''}
+      <div class="row between">
+        <div><b>${esc(src.name || src.url)}</b> <span class="badge">${src.kind.replace('_', ' ')}</span> ${svids.some((v) => v.live) ? '<span class="badge live-badge">LIVE</span>' : ''}</div>
+        <label class="check small"><input type="checkbox" ${src.watch ? 'checked' : ''} data-watch> watch for new videos</label></div>
+      <div class="small muted"><a href="${esc(src.url)}" target="_blank">${esc(src.url)}</a> · ${svids.length} videos${busy ? ` · ${busy} in progress` : ''}${pending ? ` · <a href="#/review">${pending} to review</a>` : ''} · last checked ${src.last_checked ? fmtDate(src.last_checked) : 'never'}${src.clip_terms_ok ? ' · <span class="ok-text">clipping allowed ✓</span>' : ''}${src.terms_url ? ` · <a href="${esc(src.terms_url)}" target="_blank">clipping terms ↗</a>` : ''}</div>
+      ${c.workspace ? `<div class="row" style="margin-top:8px"><input type="text" data-terms value="${esc(src.terms_url || '')}" placeholder="Clipping terms URL" style="width:260px"><input type="text" data-template value="${esc(src.caption_template || '')}" placeholder="Caption template: {hook} — clip from {creator}'s stream ({handle})" style="flex:1"><button class="btn sm" data-save-ws>Save</button></div>` : ''}
       <div class="row" style="margin-top:10px">
+        <button class="btn sm" data-toggle>${open ? 'Hide' : 'Show'} videos & moments (${svids.length})</button>
         <button class="btn sm" data-check>Check for new videos</button>
         <button class="btn sm" data-recent>Browse recent videos</button>
-        <button class="btn sm" data-facecam>${s.facecam ? 'Facecam set ✓ (edit)' : 'Set facecam crop'}</button>
-        <select class="sm" data-layout style="width:auto"><option value="full" ${s.layout === 'full' ? 'selected' : ''}>Layout: gameplay full width</option><option value="stacked" ${s.layout === 'stacked' ? 'selected' : ''}>Layout: facecam top, gameplay below</option></select>
-        <button class="btn sm danger" data-del>Remove</button>
+        <button class="btn sm ${src.facecam ? '' : 'yellow'}" data-facecam>${src.facecam ? 'Facecam set ✓ (edit)' : 'Set facecam crop'}</button>
+        <select class="sm" data-layout style="width:auto"><option value="full" ${src.layout === 'full' ? 'selected' : ''}>Layout: gameplay full width</option><option value="stacked" ${src.layout === 'stacked' ? 'selected' : ''}>Layout: facecam top, gameplay below</option></select>
+        <span class="grow"></span><button class="btn sm danger" data-del>Remove</button>
       </div>
-      <div data-extra></div>`;
-    $('[data-watch]', d).onchange = (e) => put(`/api/sources/${s.id}`, { watch: e.target.checked ? 1 : 0 }).catch(toastErr);
-    $('[data-layout]', d).onchange = (e) => put(`/api/sources/${s.id}`, { layout: e.target.value }).then(() => toast('Layout saved; re-render clips to apply')).catch(toastErr);
-    $('[data-check]', d).onclick = () => post(`/api/sources/${s.id}/check`).then(() => toast('Checking in the background')).catch(toastErr);
-    $('[data-del]', d).onclick = async () => { if (await confirmDlg(`Remove ${s.name}? Its videos and clips stay.`, 'Remove')) { await del(`/api/sources/${s.id}`); render(); } };
-    $('[data-facecam]', d).onclick = () => openFacecamPicker(s);
-    const sv = $('[data-save-ws]', d); if (sv) sv.onclick = () => put(`/api/sources/${s.id}`, { terms_url: $('[data-terms]', d).value.trim(), caption_template: $('[data-template]', d).value.trim() }).then(() => toast('Saved; applies to clips rendered from now on')).catch(toastErr);
+      <div data-extra></div>
+      <div data-videos class="${open ? '' : 'hidden'}" style="margin-top:8px">${svids.length ? '' : '<div class="small muted" style="padding:8px 0">No videos yet. "Check for new videos" looks at the channel now; "Browse recent videos" lets you pick one.</div>'}</div>`;
+    $('[data-watch]', d).onchange = (e) => put(`/api/sources/${src.id}`, { watch: e.target.checked ? 1 : 0 }).catch(toastErr);
+    $('[data-layout]', d).onchange = (e) => put(`/api/sources/${src.id}`, { layout: e.target.value }).then(() => toast('Layout saved; re-render clips to apply')).catch(toastErr);
+    $('[data-check]', d).onclick = () => post(`/api/sources/${src.id}/check`).then(() => toast('Checking in the background')).catch(toastErr);
+    $('[data-del]', d).onclick = async () => { if (await confirmDlg(`Remove ${src.name}? Its videos and clips stay.`, 'Remove')) { await del(`/api/sources/${src.id}`); render(); } };
+    $('[data-facecam]', d).onclick = () => openFacecamPicker(src);
+    $('[data-toggle]', d).onclick = () => { S.openSources[src.id] = !open; render(); };
+    const sv = $('[data-save-ws]', d); if (sv) sv.onclick = () => put(`/api/sources/${src.id}`, { terms_url: $('[data-terms]', d).value.trim(), caption_template: $('[data-template]', d).value.trim() }).then(() => toast('Saved; applies to clips rendered from now on')).catch(toastErr);
     $('[data-recent]', d).onclick = async () => {
       const x = $('[data-extra]', d); x.innerHTML = '<div class="muted small">Loading…</div>';
       try {
-        const vids = await get(`/api/sources/${s.id}/recent`);
-        x.innerHTML = `<table style="margin-top:10px">${vids.map((v) => `<tr><td><a href="${esc(v.url)}" target="_blank">${esc(v.title)}</a><br><span class="small muted">${v.published_at ? fmtDate(v.published_at) : ''} · ${v.duration ? fmtTime(v.duration) : ''} ${v.is_stream ? '· stream' : ''} ${v.gta ? '<span class="badge teal">GTA</span>' : ''}</span></td><td style="width:90px">${v.added ? '<span class="badge ok">added</span>' : `<button class="btn sm" data-add="${esc(v.url)}">Scan</button>`}</td></tr>`).join('')}</table>`;
-        $$('[data-add]', x).forEach((b) => b.onclick = () => post('/api/videos', { campaign_id: c.id, url: b.dataset.add, source_id: s.id }).then(() => { toast('Queued'); b.replaceWith('queued'); }).catch(toastErr));
+        const rv = await get(`/api/sources/${src.id}/recent`);
+        x.innerHTML = `<table style="margin-top:10px">${rv.map((v) => `<tr><td><a href="${esc(v.url)}" target="_blank">${esc(v.title)}</a><br><span class="small muted">${v.published_at ? fmtDate(v.published_at) : ''} · ${v.duration ? fmtTime(v.duration) : ''} ${v.is_stream ? '· stream' : ''} ${v.gta ? '<span class="badge teal">GTA</span>' : ''}</span></td><td style="width:90px">${v.added ? '<span class="badge ok">added</span>' : `<button class="btn sm" data-add="${esc(v.url)}">Scan</button>`}</td></tr>`).join('')}</table>`;
+        $$('[data-add]', x).forEach((b) => b.onclick = () => post('/api/videos', { campaign_id: c.id, url: b.dataset.add, source_id: src.id }).then(() => { toast('Queued'); S.openSources[src.id] = true; render(); }).catch(toastErr));
       } catch (e) { x.innerHTML = `<div class="bad-text small">${esc(e.message)}</div>`; }
     };
+    const vbox = $('[data-videos]', d);
+    if (open) for (const v of svids) renderVideo(v, vbox, c, svids.length);
     list.appendChild(d);
   }
+  if (loose.length) {
+    const d = document.createElement('div'); d.className = 'panel source-card';
+    d.innerHTML = `<div class="row between"><b>Single videos</b><span class="small muted">added by URL, not from a watched channel</span></div><div data-videos></div>`;
+    for (const v of loose) renderVideo(v, $('[data-videos]', d), c, loose.length);
+    list.appendChild(d);
+  }
+  if (S.showSkipped && $('#v-skipped')) for (const v of skipped) renderVideo(v, $('#v-skipped'), c, 99);
 };
 
 function openFacecamPicker(s) {
@@ -342,79 +385,61 @@ function readWindow(root, id) {
 }
 function wireWindow(root, id) { $(`[data-win="${id}"]`, root).onchange = (e) => $(`[data-custom="${id}"]`, root).classList.toggle('hidden', e.target.value !== 'custom'); }
 
-VIEWS.videos = async (el, arg) => {
-  const c = campaign();
-  if (!c) { el.innerHTML = noCampaign(); return; }
-  const [vids, skipped] = await Promise.all([get(`/api/videos?campaign_id=${c.id}`), get(`/api/videos/skipped?campaign_id=${c.id}`)]);
-  el.innerHTML = `
-    <div class="row between"><div><h1>Pipeline · ${esc(c.name)}</h1><p class="sub">Each video: scan a time window for moments → render clips → review. Long VODs default to their last 2 hours (clips in about 2 minutes); "Scan the rest" continues in 2-hour chunks in the background.</p></div></div>
-    <div class="panel"><div class="row"><input type="text" id="v-url" placeholder="Paste a YouTube or Twitch video URL (a stream still in progress works too)" style="flex:1;min-width:300px">${windowControls('new')}<button class="btn primary" id="v-add">Scan</button></div>
-      <div class="small muted" style="margin-top:6px">Videos published before the campaign's footage start (${esc((c.source_start || 'not set').slice(0, 10))}) are skipped unless you override.</div></div>
-    <div class="panel" id="v-list" style="margin-top:14px">${vids.length ? '' : '<div class="empty">No videos yet. Paste a URL above or add a source.</div>'}</div>
-    ${skipped.length ? `<div style="margin-top:10px"><button class="btn sm ghost" id="v-toggle-skipped">${S.showSkipped ? 'Hide' : 'Show'} skipped (${skipped.length})</button>
-      <div class="panel ${S.showSkipped ? '' : 'hidden'}" id="v-skipped" style="margin-top:8px"><div class="small muted" style="margin-bottom:6px">Published outside the campaign's footage window, so not scanned. "Scan anyway" overrides for that video.</div></div></div>` : ''}`;
-  wireWindow(el, 'new');
-  const tog = $('#v-toggle-skipped'); if (tog) tog.onclick = () => { S.showSkipped = !S.showSkipped; render(); };
-  const add = async () => { const w = readWindow(el, 'new'); if (w === null) return; const ok = !c.workspace || confirm('Does this creator publicly allow clipping (a !clipping program or clip-friendly terms)? Only continue if yes.'); if (!ok) return; try { await post('/api/videos', { campaign_id: c.id, url: $('#v-url').value.trim(), window: w, clip_terms_ok: ok }); $('#v-url').value = ''; toast('Queued for scanning'); render(); } catch (e) { toastErr(e); } };
-  $('#v-add').onclick = add; $('#v-url').onkeydown = (e) => { if (e.key === 'Enter') add(); };
-  const list = $('#v-list');
-  const renderVideo = (v, container) => {
-    const d = document.createElement('div'); d.className = 'video-row';
-    const cc = v.clip_counts || {};
-    const ranges = (v.scanned_ranges || []).map(([s, e]) => `${fmtTime(s)}–${fmtTime(e)}`).join(', ');
-    const busy = ['scanning', 'queued'].includes(v.status);
-    d.innerHTML = `
-      <div>
-        <div class="row"><b>${esc(v.title || v.url)}</b> <span class="badge ${v.status}">${v.status === 'skipped' ? 'outside campaign window' : v.status}</span> ${v.live ? '<span class="badge pink">live now</span>' : (v.is_stream ? '<span class="badge">stream VOD</span>' : '')} ${v.platform === 'twitch' ? '<span class="badge">twitch</span>' : ''}</div>
-        <div class="small muted"><a href="${esc(v.url)}" target="_blank">${esc(v.url)}</a> · ${v.channel ? esc(v.channel) + ' · ' : ''}${v.duration ? fmtTime(v.duration) : ''} ${v.published_at ? '· published ' + fmtDate(v.published_at) : ''}</div>
-        <div class="small" style="margin-top:6px">${esc(v.stage || '')}${v.error ? ` <span class="bad-text">${esc(v.error.slice(0, 400))}</span>` : ''}</div>
-        ${busy ? `<div class="progress" style="margin-top:6px;max-width:420px"><i style="width:${Math.round((v.progress || 0) * 100)}%"></i></div>` : ''}
-        <div class="small muted" style="margin-top:6px">${ranges ? 'scanned ' + ranges + ' · ' : ''}${v.moment_count} moments${v.signals.signals_used ? ' from ' + v.signals.signals_used.join(' + ') : ''}${v.signals.chat_messages ? ` · ${fmtNum(v.signals.chat_messages)} chat messages` : ''}${v.signals.chat_error ? ` · <span class="warn-text">chat: ${esc(v.signals.chat_error.slice(0, 120))}</span>` : ''} · clips: ${Object.entries(cc).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'}</div>
-        <div class="row" style="margin-top:8px" data-rescan-row><span class="small muted">Scan window:</span>${windowControls('v' + v.id, v.duration > 4 * 3600 ? 'last2h' : 'auto')}<button class="btn sm" data-rescan ${busy ? 'disabled' : ''}>${v.status === 'skipped' ? 'Scan anyway (override date window)' : (v.scanned_ranges?.length ? 'Scan this window' : 'Scan')}</button>
-          ${v.unscanned?.length && !busy ? `<button class="btn sm yellow" data-rest>Scan the rest (${v.unscanned.length} × 2 h, background)</button>` : ''}</div>
-        <div data-moments></div>
-      </div>
-      <div class="row" style="align-items:flex-start">
-        ${v.moment_count ? `<button class="btn sm" data-show>Show / hide moments</button>` : ''}
-        ${cc.pending ? `<a class="btn sm primary" href="#/review/${v.id}">Review ${cc.pending}</a>` : ''}
-        <button class="btn sm danger" data-del>Delete</button>
-      </div>`;
-    wireWindow(d, 'v' + v.id);
-    $('[data-rescan]', d).onclick = () => { const w = readWindow(d, 'v' + v.id); if (w === null) return; post(`/api/videos/${v.id}/rescan`, { window: w, override: v.status === 'skipped' }).then(render).catch(toastErr); };
-    const rest = $('[data-rest]', d); if (rest) rest.onclick = () => post(`/api/videos/${v.id}/scan_rest`).then((r) => { toast(`${r.queued_chunks} chunks queued`); render(); }).catch(toastErr);
-    $('[data-del]', d).onclick = async () => { if (await confirmDlg('Delete this video and all its clips?', 'Delete')) { await del(`/api/videos/${v.id}`); render(); } };
-    const momentsBox = $('[data-moments]', d);
-    const loadMoments = async () => {
-      const ms = await get(`/api/videos/${v.id}/moments`);
-      if (!ms.length) { momentsBox.innerHTML = ''; return; }
-      const unrendered = ms.filter((m) => !m.clip).length;
-      momentsBox.innerHTML = `<div style="margin-top:10px"><div class="row between"><b class="small">Ranked moments</b>
-          ${unrendered ? `<button class="btn sm primary" data-next>Render next best</button>` : ''}</div>
-        ${ms.map((m) => `<div class="moment ${m.flags?.length ? 'flagged' : ''}">
-          <div class="mthumb" style="background-image:url('${m.thumb_url || ''}')"></div>
-          <span class="t">${m.ts}</span><span class="score" title="${m.raw_score != null && m.raw_score !== m.score ? 'raw ' + m.raw_score : ''}">${m.score}</span>
-          <div class="grow"><div class="reason">${m.reasons.map(esc).join(' · ')}</div>
-            ${m.chat_words.length ? `<div class="reason">chat: ${m.chat_words.map(esc).join(', ')}</div>` : ''}
-            ${m.flags?.length ? `<div>${m.flags.map((f) => `<span class="badge warn">${f === 'chat_spam' ? 'chat spam' : f === 'low_speech' ? 'low speech' : esc(f)}</span>`).join(' ')}</div>` : ''}</div>
-          ${m.clip ? (m.clip.status === 'rendering'
-              ? `<span class="badge rendering">${esc(m.render_job?.message || 'rendering')}</span><button class="btn sm danger" data-cancel="${m.clip.id}">Cancel</button>`
-              : `<span class="badge ${m.clip.status}">${m.clip.status}</span>${['pending', 'approved'].includes(m.clip.status) ? `<a class="btn sm" href="#/review/${v.id}">Review</a>` : ''}`)
-            : `<button class="btn sm" data-render="${m.id}">Render</button>`}
-          <a class="small" href="${esc(v.url)}${v.platform === 'youtube' ? '&t=' + Math.round(m.t) : '?t=' + Math.round(m.t) + 's'}" target="_blank">open ↗</a></div>`).join('')}
-        <div class="row" style="margin-top:8px"><span class="small muted">Render at a time of your own:</span><input type="text" placeholder="hh:mm:ss" style="width:110px" data-custom-t><button class="btn sm" data-custom>Render</button></div></div>`;
-      $$('[data-render]', momentsBox).forEach((b) => b.onclick = () => post(`/api/moments/${b.dataset.render}/render`).then(() => { toast('Rendering'); loadMoments(); }).catch(toastErr));
-      $$('[data-cancel]', momentsBox).forEach((b) => b.onclick = () => post(`/api/clips/${b.dataset.cancel}/cancel`).then(() => { toast('Cancelled'); setTimeout(loadMoments, 800); }).catch(toastErr));
-      const nx = $('[data-next]', momentsBox); if (nx) nx.onclick = () => post(`/api/videos/${v.id}/render_next`).then(() => { toast('Rendering next best'); loadMoments(); }).catch(toastErr);
-      $('[data-custom]', momentsBox).onclick = () => { const t = parseHms($('[data-custom-t]', momentsBox).value); if (t == null) return toast('Enter hh:mm:ss', 'warn'); post(`/api/videos/${v.id}/render_custom`, { t }).then(() => { toast('Rendering'); loadMoments(); }).catch(toastErr); };
-    };
-    const showBtn = $('[data-show]', d);
-    if (showBtn) showBtn.onclick = () => { if (momentsBox.innerHTML) momentsBox.innerHTML = ''; else loadMoments(); };
-    if (v.moment_count && (S.openMoments === v.id || vids.length <= 3)) loadMoments();
-    container.appendChild(d);
+// ---------------------------------------------------------------- one video row with its ranked moments (used inside Sources)
+function renderVideo(v, container, c, siblings) {
+  const d = document.createElement('div'); d.className = 'video-row';
+  const cc = v.clip_counts || {};
+  const ranges = (v.scanned_ranges || []).map(([s, e]) => `${fmtTime(s)}–${fmtTime(e)}`).join(', ');
+  const busy = ['scanning', 'queued'].includes(v.status);
+  d.innerHTML = `
+    <div>
+      <div class="row"><b>${esc(v.title || v.url)}</b> <span class="badge ${v.status}">${v.status === 'skipped' ? 'outside campaign window' : v.status}</span> ${v.live ? '<span class="badge pink">live now</span>' : (v.is_stream ? '<span class="badge">stream VOD</span>' : '')} ${v.platform === 'twitch' ? '<span class="badge">twitch</span>' : ''}</div>
+      <div class="small muted"><a href="${esc(v.url)}" target="_blank">${esc(v.url)}</a> · ${v.channel ? esc(v.channel) + ' · ' : ''}${v.duration ? fmtTime(v.duration) : ''} ${v.published_at ? '· published ' + fmtDate(v.published_at) : ''}</div>
+      <div class="small" style="margin-top:6px">${esc(v.stage || '')}${v.error ? ` <span class="bad-text">${esc(v.error.slice(0, 400))}</span>` : ''}</div>
+      ${busy ? `<div class="progress" style="margin-top:6px;max-width:420px"><i style="width:${Math.round((v.progress || 0) * 100)}%"></i></div>` : ''}
+      <div class="small muted" style="margin-top:6px">${ranges ? 'scanned ' + ranges + ' · ' : ''}${v.moment_count} moments${v.signals.signals_used ? ' from ' + v.signals.signals_used.join(' + ') : ''}${v.signals.chat_messages ? ` · ${fmtNum(v.signals.chat_messages)} chat messages` : ''}${v.signals.chat_error ? ` · <span class="warn-text">chat: ${esc(v.signals.chat_error.slice(0, 120))}</span>` : ''} · clips: ${Object.entries(cc).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'}</div>
+      <div class="row" style="margin-top:8px" data-rescan-row><span class="small muted">Scan window:</span>${windowControls('v' + v.id, v.duration > 4 * 3600 ? 'last2h' : 'auto')}<button class="btn sm" data-rescan ${busy ? 'disabled' : ''}>${v.status === 'skipped' ? 'Scan anyway (override date window)' : (v.scanned_ranges?.length ? 'Scan this window' : 'Scan')}</button>
+        ${v.unscanned?.length && !busy ? `<button class="btn sm yellow" data-rest>Scan the rest (${v.unscanned.length} × 2 h, background)</button>` : ''}</div>
+      <div data-moments></div>
+    </div>
+    <div class="row" style="align-items:flex-start">
+      ${v.moment_count ? `<button class="btn sm" data-show>Show / hide moments</button>` : ''}
+      ${cc.pending ? `<a class="btn sm primary" href="#/review/${v.id}">Review ${cc.pending}</a>` : ''}
+      <button class="btn sm danger" data-del>Delete</button>
+    </div>`;
+  wireWindow(d, 'v' + v.id);
+  $('[data-rescan]', d).onclick = () => { const w = readWindow(d, 'v' + v.id); if (w === null) return; post(`/api/videos/${v.id}/rescan`, { window: w, override: v.status === 'skipped' }).then(render).catch(toastErr); };
+  const rest = $('[data-rest]', d); if (rest) rest.onclick = () => post(`/api/videos/${v.id}/scan_rest`).then((r) => { toast(`${r.queued_chunks} chunks queued`); render(); }).catch(toastErr);
+  $('[data-del]', d).onclick = async () => { if (await confirmDlg('Delete this video and all its clips?', 'Delete')) { await del(`/api/videos/${v.id}`); render(); } };
+  const momentsBox = $('[data-moments]', d);
+  const loadMoments = async () => {
+    const ms = await get(`/api/videos/${v.id}/moments`);
+    if (!ms.length) { momentsBox.innerHTML = ''; return; }
+    const unrendered = ms.filter((m) => !m.clip).length;
+    momentsBox.innerHTML = `<div style="margin-top:10px"><div class="row between"><b class="small">Ranked moments</b>
+        ${unrendered ? `<button class="btn sm primary" data-next>Render next best</button>` : ''}</div>
+      ${ms.map((m) => `<div class="moment ${m.flags?.length ? 'flagged' : ''}">
+        <div class="mthumb" style="background-image:url('${m.thumb_url || ''}')"></div>
+        <span class="t">${m.ts}</span><span class="score" title="${m.raw_score != null && m.raw_score !== m.score ? 'raw ' + m.raw_score : ''}">${m.score}</span>
+        <div class="grow"><div class="reason">${m.reasons.map(esc).join(' · ')}</div>
+          ${m.chat_words.length ? `<div class="reason">chat: ${m.chat_words.map(esc).join(', ')}</div>` : ''}
+          ${m.flags?.length ? `<div>${m.flags.map((f) => `<span class="badge warn">${f === 'chat_spam' ? 'chat spam' : f === 'low_speech' ? 'low speech' : esc(f)}</span>`).join(' ')}</div>` : ''}</div>
+        ${m.clip ? (m.clip.status === 'rendering'
+            ? `<span class="badge rendering">${esc(m.render_job?.message || 'rendering')}</span><button class="btn sm danger" data-cancel="${m.clip.id}">Cancel</button>`
+            : `<span class="badge ${m.clip.status}">${m.clip.status}</span>${['pending', 'approved'].includes(m.clip.status) ? `<a class="btn sm" href="#/review/${v.id}">Review</a>` : ''}`)
+          : `<button class="btn sm" data-render="${m.id}">Render</button>`}
+        <a class="small" href="${esc(v.url)}${v.platform === 'youtube' ? '&t=' + Math.round(m.t) : '?t=' + Math.round(m.t) + 's'}" target="_blank">open ↗</a></div>`).join('')}
+      <div class="row" style="margin-top:8px"><span class="small muted">Render at a time of your own:</span><input type="text" placeholder="hh:mm:ss" style="width:110px" data-custom-t><button class="btn sm" data-custom>Render</button></div></div>`;
+    $$('[data-render]', momentsBox).forEach((b) => b.onclick = () => post(`/api/moments/${b.dataset.render}/render`).then(() => { toast('Rendering'); loadMoments(); }).catch(toastErr));
+    $$('[data-cancel]', momentsBox).forEach((b) => b.onclick = () => post(`/api/clips/${b.dataset.cancel}/cancel`).then(() => { toast('Cancelled'); setTimeout(loadMoments, 800); }).catch(toastErr));
+    const nx = $('[data-next]', momentsBox); if (nx) nx.onclick = () => post(`/api/videos/${v.id}/render_next`).then(() => { toast('Rendering next best'); loadMoments(); }).catch(toastErr);
+    $('[data-custom]', momentsBox).onclick = () => { const t = parseHms($('[data-custom-t]', momentsBox).value); if (t == null) return toast('Enter hh:mm:ss', 'warn'); post(`/api/videos/${v.id}/render_custom`, { t }).then(() => { toast('Rendering'); loadMoments(); }).catch(toastErr); };
   };
-  for (const v of vids) renderVideo(v, list);
-  if (S.showSkipped && $('#v-skipped')) for (const v of skipped) renderVideo(v, $('#v-skipped'));
-};
+  const showBtn = $('[data-show]', d);
+  if (showBtn) showBtn.onclick = () => { if (momentsBox.innerHTML) momentsBox.innerHTML = ''; else loadMoments(); };
+  if (v.moment_count && (S.openMoments === v.id || siblings <= 3)) loadMoments();
+  container.appendChild(d);
+}
 
 // ---------------------------------------------------------------- Review
 VIEWS.review = async (el, arg) => {
@@ -566,7 +591,7 @@ VIEWS.publish = async (el) => {
   el.innerHTML = `
     <h1>Publish · ${esc(c.name)}</h1><p class="sub">Pick accounts, then Post now or Schedule. Each clip goes to at most one account per platform.</p>
     <div class="callout">Scheduled posts fire from this app's own scheduler, so Clip Dashboard has to be running at that time. YouTube (direct) and the posting service schedule on their side and don't need the app.</div>
-    ${usable.length ? '' : `<div class="callout pink">No accounts for this campaign's platforms yet. <a href="#/accounts">Add accounts</a> (assisted posting needs no setup).</div>`}
+    ${usable.length ? '' : `<div class="callout pink">No accounts for this campaign's platforms yet. <a href="#/settings/accounts">Add accounts</a> (assisted posting needs no setup).</div>`}
     <h2>Approved clips</h2>
     <div class="clip-grid" id="pub-grid">${clips.length ? '' : '<div class="empty" style="grid-column:1/-1">Approve clips on the Review page first.</div>'}</div>
     <h2>Queue</h2>
@@ -675,11 +700,20 @@ VIEWS.submissions = async (el) => {
   tick(); clearInterval(S.tick); S.tick = setInterval(tick, 1000);
 };
 
+// ---------------------------------------------------------------- Settings (tabs: Tuning · Setup · Accounts · Stats)
+const PANES = {};
+const SETTINGS_TABS = [['tuning', 'Tuning'], ['setup', 'Setup'], ['accounts', 'Accounts'], ['stats', 'Stats']];
+VIEWS.settings = async (el, arg) => {
+  const tab = SETTINGS_TABS.some(([k]) => k === arg) ? arg : 'tuning';
+  el.innerHTML = `<h1>Settings</h1><div class="tabs" style="margin-bottom:16px">${SETTINGS_TABS.map(([k, l]) => `<a href="#/settings/${k}" class="${k === tab ? 'on' : ''}">${l}</a>`).join('')}</div><div id="pane"></div>`;
+  await PANES[tab]($('#pane'));
+};
+
 // ---------------------------------------------------------------- Stats
-VIEWS.stats = async (el) => {
+PANES.stats = async (el) => {
   const c = campaign();
   const st = await get(`/api/stats${c ? '?campaign_id=' + c.id : ''}`);
-  el.innerHTML = `<div class="row between"><div><h1>Stats</h1><p class="sub">Views where the platform API provides them (direct and service routes). Assisted posts show no views. Estimated earnings use the campaign's rate and cap; pool campaigns pay by share of approved views, which the app can't know.</p></div><button class="btn" id="refresh">Refresh views</button></div>
+  el.innerHTML = `<div class="row between"><div><h2 style="margin-top:0">Stats</h2><p class="sub">Views where the platform API provides them (direct and service routes). Assisted posts show no views. Estimated earnings use the campaign's rate and cap; pool campaigns pay by share of approved views, which the app can't know.</p></div><button class="btn" id="refresh">Refresh views</button></div>
     <div class="stat-tiles">${st.campaigns.map((x) => `<div class="tile teal"><div class="n">${fmtNum(x.views)}</div><div class="l">${esc(x.campaign.name)} views over ${x.posts} live posts</div></div>
       <div class="tile yellow"><div class="n">${x.campaign.pay_model === 'pool' ? '$' + fmtNum(x.campaign.pool_budget) + ' pool' : '$' + x.earnings.toFixed(2)}</div><div class="l">${x.campaign.pay_model === 'pool' ? `pool · ${x.campaign.min_views ? fmtNum(x.views) + ' / ' + fmtNum(x.campaign.min_views) + ' views needed' : 'split by view share'}` : 'estimated earnings'}</div></div>`).join('') || '<div class="muted">No live posts yet.</div>'}</div>
     <div class="panel" style="margin-top:14px"><table><tr><th>Post</th><th>Platform</th><th>Views</th><th>Est.</th><th>Checked</th></tr>${st.posts.map((p) => `<tr><td class="small"><a href="${esc(p.url || '#')}" target="_blank">${esc(p.clip?.hook || p.title)}</a></td><td><span class="badge">${p.platform}</span> <span class="badge ${p.route}">${p.route}</span></td><td>${p.views == null ? '<span class="muted">n/a</span>' : fmtNum(p.views)}</td><td>${p.earnings_estimate ? '$' + p.earnings_estimate.toFixed(2) : ''}</td><td class="small muted">${p.views_checked_at ? fmtDate(p.views_checked_at) : ''}</td></tr>`).join('')}</table></div>`;
@@ -687,9 +721,9 @@ VIEWS.stats = async (el) => {
 };
 
 // ---------------------------------------------------------------- Accounts
-VIEWS.accounts = async (el) => {
+PANES.accounts = async (el) => {
   const [accounts, routes] = await Promise.all([get('/api/accounts'), get('/api/routes')]);
-  el.innerHTML = `<div class="row between"><div><h1>Accounts</h1><p class="sub">Each account posts through one route. Direct = your own developer app on the platform's official API. Service = an audited third-party posting API. Assisted = you upload, the app does the rest.</p></div><button class="btn primary" id="add-acc">Add account</button></div>
+  el.innerHTML = `<div class="row between"><div><h2 style="margin-top:0">Accounts</h2><p class="sub">Each account posts through one route. Direct = your own developer app on the platform's official API. Service = an audited third-party posting API. Assisted = you upload, the app does the rest.</p></div><button class="btn primary" id="add-acc">Add account</button></div>
     <div class="grid cols-2" id="acc-grid">${accounts.length ? '' : '<div class="empty">No accounts. Add one; assisted posting works immediately.</div>'}</div>
     <h2>What each route can do</h2><div class="panel"><table><tr><th>Route</th><th>Public posts</th><th>Scheduling</th><th>Notes</th></tr>${Object.values(routes).map((r) => `<tr><td><span class="badge">${r.platform}</span> <span class="badge ${r.route}">${r.route}</span></td><td>${r.public ? '<span class="ok-text">yes</span>' : '<span class="warn-text">private only until audited</span>'}</td><td>${r.native_schedule ? 'on the platform/service' : 'this app (must be running)'}</td><td class="small muted">${esc(r.notes)}</td></tr>`).join('')}</table></div>`;
   const g = $('#acc-grid');
@@ -718,10 +752,10 @@ VIEWS.accounts = async (el) => {
 };
 
 // ---------------------------------------------------------------- Setup
-VIEWS.setup = async (el) => {
+PANES.setup = async (el) => {
   const s = await get('/api/setup/checks');
   const allOk = s.checks.filter((c) => c.name !== 'TwitchDownloaderCLI').every((c) => c.ok);
-  el.innerHTML = `<h1>Setup</h1><p class="sub">First run: check the tools, then connect accounts. Everything downloads into the app's data folder; nothing needs a terminal after install.</p>
+  el.innerHTML = `<h2 style="margin-top:0">Setup</h2><p class="sub">First run: check the tools, then connect accounts. Everything downloads into the app's data folder; nothing needs a terminal after install.</p>
     <div class="panel"><h3 style="margin-top:0">Dependencies</h3>${s.checks.map((c) => `<div class="rule ${c.ok ? '' : 'bad'}"><span class="dot"></span><b style="min-width:170px">${esc(c.name)}</b><span class="grow">${esc(c.detail)}${c.fix && !c.ok ? `<br><span class="small muted">${esc(c.fix)}</span>` : ''}</span>${c.action ? `<button class="btn sm" data-action="${c.action}">Download</button>` : ''}</div>`).join('')}
       ${S.state?.jobs_running?.length ? `<div class="small muted" style="margin-top:8px">⟳ ${esc(S.state.jobs_running[0].message)}</div>` : ''}</div>
     <div class="grid cols-2" style="margin-top:14px">
@@ -751,7 +785,7 @@ VIEWS.setup = async (el) => {
       <div>${s.tts.map((t) => `<div class="rule ${t.ok ? '' : 'bad'}"><span class="dot"></span><b style="min-width:200px">${esc(t.label)}</b><span class="grow">${esc(t.detail)}</span>${t.id === 'piper' && !t.ok ? '<button class="btn sm" data-action="download_piper_voice">Download voice</button>' : ''}</div>`).join('')}
         <div class="rule ${s.llm.ok ? '' : 'bad'}"><span class="dot"></span><b style="min-width:200px">Hook writer</b><span class="grow">${esc(s.llm.ok ? 'key saved for ' + s.llm.provider : s.llm.detail)}</span></div></div>
       <div class="small muted" style="margin-top:6px">Narration is off per campaign by default and locked off where the rules ban AI content. Hooks are always shown to you before anything renders.</div></div>
-    <div class="row" style="margin-top:14px"><button class="btn primary" id="sec-save">Save credentials</button><span class="grow"></span>${allOk ? '<button class="btn yellow" id="setup-done">Setup complete → go to Overview</button>' : '<span class="muted small">Fix the red items above to finish setup.</span>'}</div>
+    <div class="row" style="margin-top:14px"><button class="btn primary" id="sec-save">Save credentials</button><span class="grow"></span>${allOk ? '<button class="btn yellow" id="setup-done">Setup complete → go to Today</button>' : '<span class="muted small">Fix the red items above to finish setup.</span>'}</div>
     <p class="small muted" style="margin-top:14px">Credentials are stored in <code>data/secrets.json</code> (gitignored, user-only permissions), never in the repository. See <code>.env.example</code> for the list.</p>`;
   $$('[data-action]').forEach((b) => b.onclick = () => post('/api/setup/action', { action: b.dataset.action }).then(() => { toast('Downloading in the background'); b.disabled = true; }).catch(toastErr));
   $('#sec-save').onclick = async () => {
@@ -766,7 +800,7 @@ VIEWS.setup = async (el) => {
 };
 
 // ---------------------------------------------------------------- Settings
-VIEWS.settings = async (el) => {
+PANES.tuning = async (el) => {
   const s = await get('/api/settings');
   const F = [
     ['lead_in', 'Seconds before the spike the clip starts', 'number'], ['download_length', 'Seconds downloaded per moment (trim inside this)', 'number'],
@@ -775,7 +809,7 @@ VIEWS.settings = async (el) => {
     ['audio_spike_db', 'Audio spike (dB above usual = score 1)', 'number'], ['whisper_model', 'Whisper model (tiny / base / small / medium)', 'text'],
     ['facecam_fraction', 'Facecam height as a fraction of the frame', 'number'], ['cache_cap_mb', 'Cache cap (MB)', 'number'], ['watch_interval_min', 'Check sources every N minutes', 'number'],
   ];
-  el.innerHTML = `<h1>Settings</h1><p class="sub">Tuning for moment detection and rendering. Defaults match the prototype that worked on real footage.</p>
+  el.innerHTML = `<h2 style="margin-top:0">Tuning</h2><p class="sub">Moment detection and rendering. Defaults match the prototype that worked on real footage.</p>
     <div class="panel"><div class="form-grid">${F.map(([k, l, t]) => `<div class="field"><label>${esc(l)}</label><input type="${t}" step="any" data-k="${k}" value="${esc(s[k] ?? '')}"></div>`).join('')}</div>
       <div class="field"><label>Hype tokens (comma separated; chat messages containing these weigh more)</label><input type="text" data-k="hype_tokens" value="${esc((s.hype_tokens || []).join(', '))}"></div>
       <label class="check"><input type="checkbox" data-k="gta_only" ${s.gta_only ? 'checked' : ''}> Only queue videos whose title looks like GTA VI</label>
