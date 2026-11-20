@@ -422,6 +422,8 @@ def render_clip(clip_id: int, progress) -> None:
 
     progress(0.6, "Rendering 9:16")
     facecam = (source or {}).get("facecam")
+    if facecam and facecam.get("none"):
+        facecam = None
     layout = (source or {}).get("layout") or ("stacked" if facecam else "full")
     out = config.CLIPS / f"{key}_{clip_id}.mp4"
     cut.render(seg, out, facecam, layout, ass, cam_fraction=float(settings.get("facecam_fraction", 0.32)))

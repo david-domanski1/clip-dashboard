@@ -377,9 +377,12 @@ def update_source(sid: int, body: dict):
     data = {k: v for k, v in body.items() if k in ("facecam", "layout", "watch", "name", "terms_url", "caption_template", "clip_terms_ok")}
     if "facecam" in data and data["facecam"]:
         fc = data["facecam"]
-        if not all(k in fc for k in ("x", "y", "w", "h")) or fc["w"] <= 0.02 or fc["h"] <= 0.02:
+        if fc.get("none"):            # the person confirmed "no facecam": remembered so Review stops asking
+            data["facecam"], data["layout"] = {"none": True}, "full"
+        elif not all(k in fc for k in ("x", "y", "w", "h")) or fc["w"] <= 0.02 or fc["h"] <= 0.02:
             _bad("Facecam box is too small")
-        data.setdefault("layout", "stacked")
+        else:
+            data.setdefault("layout", "stacked")
     db.update("sources", sid, data)
     return db.get("sources", sid)
 
@@ -582,6 +585,13 @@ def _clip_full(c: dict) -> dict:
     n = c.get("narration") or {}
     c["narration_preview_url"] = f"/media/clip/{c['id']}?narrated=1" if n.get("preview_path") and Path(n["preview_path"]).exists() else None
     c["narration_allowed"], c["narration_reason"] = rules.narration_allowed(campaign) if campaign else (False, "")
+    source = db.get("sources", video["source_id"]) if video and video.get("source_id") else None
+    c["source"] = {k: source.get(k) for k in ("id", "name", "facecam", "layout")} if source else None
+    if c["source"]:
+        c["source"]["facecam_decided"] = bool(c["source"]["facecam"])     # a crop, or a confirmed "no facecam"
+        if (c["source"]["facecam"] or {}).get("none"):
+            c["source"]["facecam"] = None
+    c["rule_count"] = len(c.get("rule_results") or [])
     return c
 
 

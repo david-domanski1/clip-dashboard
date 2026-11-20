@@ -322,7 +322,7 @@ VIEWS.sources = async (el, arg) => {
         <button class="btn sm" data-toggle>${open ? 'Hide' : 'Show'} videos & moments (${svids.length})</button>
         <button class="btn sm" data-check>Check for new videos</button>
         <button class="btn sm" data-recent>Browse recent videos</button>
-        <button class="btn sm ${src.facecam ? '' : 'yellow'}" data-facecam>${src.facecam ? 'Facecam set ✓ (edit)' : 'Set facecam crop'}</button>
+        <button class="btn sm ${src.facecam ? '' : 'yellow'}" data-facecam>${src.facecam ? (src.facecam.none ? 'No facecam (edit)' : 'Facecam set ✓ (edit)') : 'Set facecam crop'}</button>
         <select class="sm" data-layout style="width:auto"><option value="full" ${src.layout === 'full' ? 'selected' : ''}>Layout: gameplay full width</option><option value="stacked" ${src.layout === 'stacked' ? 'selected' : ''}>Layout: facecam top, gameplay below</option></select>
         <span class="grow"></span><button class="btn sm danger" data-del>Remove</button>
       </div>
@@ -357,16 +357,20 @@ VIEWS.sources = async (el, arg) => {
 };
 
 function openFacecamPicker(s) {
-  const m = modal(`
-    <div class="modal-head"><h2 style="margin:0">Facecam crop · ${esc(s.name)}</h2><button class="btn ghost" onclick="closeModal()">✕</button></div>
+  const m = modal(`<div class="modal-head"><h2 style="margin:0">Facecam crop · ${esc(s.name)}</h2><button class="btn ghost" onclick="closeModal()">✕</button></div><div id="fc-root"></div>`);
+  facecamPicker(s, $('#fc-root', m), () => { closeModal(); render(); });
+}
+// Renders the facecam picker into `root`; onDone(saved) is called after Save or "No facecam".
+function facecamPicker(s, root, onDone) {
+  root.innerHTML = `
     <p class="muted small">Drag a box around the streamer's webcam. It is cropped and placed on top of the gameplay in every clip from this source. If no frame is shown yet, grab one (downloads a 3-second sample).</p>
-    <div class="row" style="margin-bottom:10px"><button class="btn sm" id="fc-grab">Grab a frame</button><span class="small muted" id="fc-status"></span></div>
-    <div class="picker" id="fc-picker"><img id="fc-img" src="/media/frame/${s.id}?t=${Date.now()}" alt=""><canvas id="fc-canvas"></canvas></div>
-    <div class="row" style="margin-top:12px"><span class="mono" id="fc-box">${s.facecam ? `x ${s.facecam.x.toFixed(3)} y ${s.facecam.y.toFixed(3)} w ${s.facecam.w.toFixed(3)} h ${s.facecam.h.toFixed(3)}` : 'no box yet'}</span><span class="grow"></span>
-      <button class="btn" id="fc-clear">No facecam (gameplay only)</button><button class="btn primary" id="fc-save" ${s.facecam ? '' : 'disabled'}>Save crop</button></div>`);
-  let box = s.facecam ? { ...s.facecam } : null;
-  const img = $('#fc-img', m), cv = $('#fc-canvas', m);
-  img.onerror = () => { $('#fc-status', m).textContent = 'No frame yet. Click "Grab a frame".'; img.style.minHeight = '200px'; };
+    <div class="row" style="margin-bottom:10px"><button class="btn sm" data-fc-grab>Grab a frame</button><span class="small muted" data-fc-status></span></div>
+    <div class="picker"><img data-fc-img src="/media/frame/${s.id}?t=${Date.now()}" alt=""><canvas data-fc-canvas></canvas></div>
+    <div class="row" style="margin-top:12px"><span class="mono" data-fc-box>${s.facecam && !s.facecam.none ? `x ${s.facecam.x.toFixed(3)} y ${s.facecam.y.toFixed(3)} w ${s.facecam.w.toFixed(3)} h ${s.facecam.h.toFixed(3)}` : 'no box yet'}</span><span class="grow"></span>
+      <button class="btn" data-fc-clear>No facecam (gameplay only)</button><button class="btn primary" data-fc-save ${s.facecam && !s.facecam.none ? '' : 'disabled'}>Save crop</button></div>`;
+  let box = s.facecam && !s.facecam.none ? { ...s.facecam } : null;
+  const img = $('[data-fc-img]', root), cv = $('[data-fc-canvas]', root), status = $('[data-fc-status]', root);
+  img.onerror = () => { status.textContent = 'No frame yet. Click "Grab a frame".'; img.style.minHeight = '200px'; };
   const draw = () => {
     cv.width = img.clientWidth || 640; cv.height = img.clientHeight || 360;
     const ctx = cv.getContext('2d'); ctx.clearRect(0, 0, cv.width, cv.height);
@@ -374,27 +378,28 @@ function openFacecamPicker(s) {
     ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(0, 0, cv.width, cv.height);
     ctx.clearRect(box.x * cv.width, box.y * cv.height, box.w * cv.width, box.h * cv.height);
     ctx.strokeStyle = '#1fd1d6'; ctx.lineWidth = 2; ctx.strokeRect(box.x * cv.width, box.y * cv.height, box.w * cv.width, box.h * cv.height);
-    $('#fc-box', m).textContent = `x ${box.x.toFixed(3)} y ${box.y.toFixed(3)} w ${box.w.toFixed(3)} h ${box.h.toFixed(3)}`;
-    $('#fc-save', m).disabled = false;
+    $('[data-fc-box]', root).textContent = `x ${box.x.toFixed(3)} y ${box.y.toFixed(3)} w ${box.w.toFixed(3)} h ${box.h.toFixed(3)}`;
+    $('[data-fc-save]', root).disabled = false;
   };
   img.onload = draw; if (img.complete) setTimeout(draw, 50);
   let start = null;
-  const pos = (e) => { const r = cv.getBoundingClientRect(); return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) }; };
-  cv.onmousedown = (e) => { start = pos(e); box = { x: start.x, y: start.y, w: 0, h: 0 }; draw(); };
-  cv.onmousemove = (e) => { if (!start) return; const p = pos(e); box = { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), w: Math.abs(p.x - start.x), h: Math.abs(p.y - start.y) }; draw(); };
-  window.onmouseup = () => { start = null; };
-  $('#fc-grab', m).onclick = async () => {
-    $('#fc-status', m).textContent = 'Downloading a sample… (10-30 s)';
+  const pos = (e) => { const r = cv.getBoundingClientRect(); const t = e.touches ? e.touches[0] : e; return { x: Math.min(1, Math.max(0, (t.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (t.clientY - r.top) / r.height)) }; };
+  const down = (e) => { start = pos(e); box = { x: start.x, y: start.y, w: 0, h: 0 }; draw(); e.preventDefault(); };
+  const move = (e) => { if (!start) return; const p = pos(e); box = { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), w: Math.abs(p.x - start.x), h: Math.abs(p.y - start.y) }; draw(); e.preventDefault(); };
+  const up = () => { start = null; };
+  cv.onmousedown = down; cv.onmousemove = move; cv.onmouseup = up; cv.ontouchstart = down; cv.ontouchmove = move; cv.ontouchend = up;
+  $('[data-fc-grab]', root).onclick = async () => {
+    status.textContent = 'Downloading a sample… (10-30 s)';
     await post(`/api/sources/${s.id}/grab_frame`);
     let tries = 0; const iv = setInterval(async () => {
       tries++; const jobs = await get('/api/jobs?limit=5'); const j = jobs.find((x) => x.type === 'grab_frame' && x.payload.source_id === s.id);
-      if (j && j.status === 'done') { clearInterval(iv); img.src = `/media/frame/${s.id}?t=${Date.now()}`; $('#fc-status', m).textContent = 'Frame ready. Drag a box.'; }
-      else if (j && j.status === 'error') { clearInterval(iv); $('#fc-status', m).textContent = 'Failed: ' + j.error; }
+      if (j && j.status === 'done') { clearInterval(iv); img.src = `/media/frame/${s.id}?t=${Date.now()}`; status.textContent = 'Frame ready. Drag a box.'; }
+      else if (j && j.status === 'error') { clearInterval(iv); status.textContent = 'Failed: ' + reasonOf(j.error); }
       else if (tries > 60) clearInterval(iv);
     }, 2000);
   };
-  $('#fc-save', m).onclick = async () => { if (!box || box.w < 0.03 || box.h < 0.03) return toast('Box too small', 'warn'); await put(`/api/sources/${s.id}`, { facecam: box, layout: 'stacked' }); closeModal(); toast('Facecam saved. Re-render existing clips to apply it.'); render(); };
-  $('#fc-clear', m).onclick = async () => { await put(`/api/sources/${s.id}`, { facecam: null, layout: 'full' }); closeModal(); render(); };
+  $('[data-fc-save]', root).onclick = async () => { if (!box || box.w < 0.03 || box.h < 0.03) return toast('Box too small', 'warn'); await put(`/api/sources/${s.id}`, { facecam: box, layout: 'stacked' }); toast('Facecam saved. Re-render existing clips to apply it.'); onDone(true); };
+  $('[data-fc-clear]', root).onclick = async () => { await put(`/api/sources/${s.id}`, { facecam: { none: true }, layout: 'full' }); onDone(false); };
 }
 
 // ---------------------------------------------------------------- Pipeline (videos)
@@ -484,7 +489,10 @@ VIEWS.review = async (el, arg) => {
   const c = campaign();
   if (!c) { el.innerHTML = noCampaign(); return; }
   const filter = S.reviewFilter || 'pending';
-  const clips = await get(`/api/clips?campaign_id=${c.id}${filter === 'all' ? '' : '&status=' + filter}${arg ? '&video_id=' + arg : ''}`);
+  const openId = arg && arg.startsWith('clip/') ? Number(arg.slice(5)) : null;
+  const videoArg = arg && !openId ? arg : '';
+  const clips = await get(`/api/clips?campaign_id=${c.id}${filter === 'all' ? '' : '&status=' + filter}${videoArg ? '&video_id=' + videoArg : ''}`);
+  S.clipOrder = clips.filter((x) => x.status !== 'rendering').map((x) => x.id);
   el.innerHTML = `
     <div class="row between"><div><h1>Review · ${esc(c.name)}</h1><p class="sub">${c.workspace ? 'No campaign rules here: only the 9:16 format check and clean text apply. Captions credit the streamer; edit the template per source.' : "Watch every clip. Trim it to open on something worth watching, fix the hook, tick the checklist, then approve or reject. Clips that fail a campaign rule can't be approved."}</p></div>
       <div class="chips">${[['pending', 'To review'], ['approved', 'Approved'], ['rejected', 'Rejected'], ['posted', 'Posted'], ['rendering,error', 'Rendering / failed'], ['all', 'All']].map(([k, l]) => `<span class="chip ${filter === k ? 'on' : ''}" data-f="${k}">${l}</span>`).join('')}</div></div>
@@ -510,6 +518,7 @@ VIEWS.review = async (el, arg) => {
     d.onclick = () => { if (cl.status !== 'rendering') openClip(cl.id); };
     g.appendChild(d);
   }
+  if (openId && !$('#modal-root').innerHTML) openClip(openId);
 };
 
 async function openClip(id) {
@@ -517,57 +526,72 @@ async function openClip(id) {
   const camp = S.campaigns.find((x) => x.id === cl.campaign_id) || campaign();
   const plats = camp.platforms || Object.keys(cl.post_text || {});
   let tab = plats[0] || 'tiktok';
-  const m = modal(`<div class="modal-head"><div><h2 style="margin:0">${esc(cl.video?.title || 'Clip')}</h2><span class="small muted">from ${fmtTime(cl.source_start)} · ${cl.moment ? cl.moment.reasons.map(esc).join(' · ') : ''}</span></div><button class="btn ghost" onclick="closeModal()">✕</button></div>
+  const order = S.clipOrder || [];
+  const nextId = order[order.indexOf(cl.id) + 1] || null;
+  const noFacecam = cl.source && !cl.source.facecam_decided;
+  const m = modal(`<div class="modal-head"><div><h2 style="margin:0">${esc(cl.video?.title || 'Clip')}</h2><span class="small muted">from ${fmtTime(cl.source_start)} · ${cl.moment ? esc(momentStrength(cl.moment)) : ''}${cl.moment?.chat_words?.length ? ' · chat was saying: ' + cl.moment.chat_words.map(esc).join(', ') : ''}</span></div>
+      <div class="row"><span class="small muted kbd-hint">space play · A approve · R reject · → next</span>${nextId ? `<button class="btn sm" id="next-clip">Next clip →</button>` : ''}<button class="btn ghost" onclick="closeModal()">✕</button></div></div>
     <div class="review-layout">
-      <div>
-        <video id="rv" src="${cl.video_url}" controls playsinline></video>
-        <div class="trim panel" style="margin-top:10px">
-          <div class="row between"><b>Trim</b><span id="trim-len" class="small"></span></div>
-          <label class="small muted">Start <span id="ts-v"></span></label><input type="range" id="ts" min="0" max="${cl.duration}" step="0.1" value="${cl.trim_start}">
-          <label class="small muted">End <span id="te-v"></span></label><input type="range" id="te" min="0" max="${cl.duration}" step="0.1" value="${cl.trim_end || cl.duration}">
-          <div class="row"><button class="btn sm" id="ts-now">Start = here</button><button class="btn sm" id="te-now">End = here</button><button class="btn sm" id="trim-play">▶ Play trimmed</button><span class="grow"></span><button class="btn sm primary" id="trim-save">Save trim</button></div>
-          <div class="small muted">Need more lead-in/out? <button class="btn sm ghost" id="shift-back">Re-cut 15 s earlier</button> <button class="btn sm ghost" id="shift-fwd">Re-cut 15 s later</button></div>
-        </div>
-      </div>
-      <div>
+      <div class="review-video"><video id="rv" src="${cl.video_url}" controls playsinline></video></div>
+      <div class="review-side">
+        ${noFacecam ? `<div class="callout" id="fc-banner"><b>Facecam not set for this streamer — set it once.</b> <span class="small muted">Clips use the gameplay-only layout until then.</span> <button class="btn sm yellow" id="fc-open" style="margin-left:6px">Set it now</button><div id="fc-inline" class="hidden" style="margin-top:10px"></div></div>` : ''}
         <div class="panel">
-          <div class="row between"><b>Rule checks</b><span class="small muted">machine-checked before approval</span></div>
-          <div id="rules"></div>
-        </div>
-        <div class="panel" style="margin-top:12px">
-          <div class="field"><label>Hook (a real sentence from the clip; stays editable)</label><input type="text" id="hook" value="${esc(cl.hook)}">
+          <div class="field"><label>Hook (a real sentence from the clip; this becomes the title)</label><input type="text" id="hook" value="${esc(cl.hook)}">
             <div class="chips" id="hook-cands"></div></div>
-          <div class="tabs" id="pt-tabs">${plats.map((p) => `<button data-p="${p}" class="${p === tab ? 'on' : ''}">${p}</button>`).join('')}</div>
-          <div id="pt-body"></div>
-          <div class="row" style="margin-top:8px"><button class="btn sm" id="pt-regen">Rebuild post text from hook</button><button class="btn sm primary" id="pt-save">Save text</button></div>
-        </div>
-        <div class="panel" style="margin-top:12px" id="narr-panel"></div>
-        <div class="panel" style="margin-top:12px">
-          <b>Review checklist</b>
+          <b>Before approving, check</b>
           <div id="checks">${cl.checklist_items.map((t, i) => `<label class="check"><input type="checkbox" data-i="${i}" ${cl.checklist && cl.checklist[i] ? 'checked' : ''}> ${esc(t)}</label>`).join('')}</div>
           <div class="row" style="margin-top:12px">
-            <button class="btn primary" id="approve" ${cl.status === 'posted' ? 'disabled' : ''}>Approve</button>
+            <button class="btn primary" id="approve">Approve</button>
             <button class="btn danger" id="reject" ${cl.status === 'posted' ? 'disabled' : ''}>Reject</button>
-            <span class="grow"></span>
-            <button class="btn sm" id="rerender">Re-render</button>
-            <button class="btn sm" id="reveal">Reveal file</button>
-            <button class="btn sm danger" id="delete">Delete</button>
+            <span class="small" id="approve-why" style="flex:1"></span>
           </div>
-          <div class="small muted" style="margin-top:8px">Approving triggers the final trimmed export. Posting happens on the Publish page.</div>
         </div>
+        <details class="panel sect"><summary>Trim <span class="small muted" id="trim-len"></span></summary>
+          <div class="trim" style="margin-top:8px">
+            <label class="small muted">Start <span id="ts-v"></span></label><input type="range" id="ts" min="0" max="${cl.duration}" step="0.1" value="${cl.trim_start}">
+            <label class="small muted">End <span id="te-v"></span></label><input type="range" id="te" min="0" max="${cl.duration}" step="0.1" value="${cl.trim_end || cl.duration}">
+            <div class="row"><button class="btn sm" id="ts-now">Start = here</button><button class="btn sm" id="te-now">End = here</button><button class="btn sm" id="trim-play">▶ Play trimmed</button><span class="grow"></span><button class="btn sm primary" id="trim-save">Save trim</button></div>
+            <div class="small muted">Need more lead-in/out? <button class="btn sm ghost" id="shift-back">Re-cut 15 s earlier</button> <button class="btn sm ghost" id="shift-fwd">Re-cut 15 s later</button></div>
+          </div></details>
+        <details class="panel sect"><summary>Post text per platform</summary>
+          <div class="tabs" id="pt-tabs" style="margin-top:8px">${plats.map((p) => `<button data-p="${p}" class="${p === tab ? 'on' : ''}">${p}</button>`).join('')}</div>
+          <div id="pt-body"></div>
+          <div class="row" style="margin-top:8px"><button class="btn sm" id="pt-regen">Rebuild from hook</button><button class="btn sm primary" id="pt-save">Save text</button></div></details>
+        <details class="panel sect" id="rules-sect"><summary id="rules-summary"></summary><div id="rules" style="margin-top:8px"></div></details>
+        <details class="panel sect" id="narr-sect"><summary>Narrated intro <span class="small muted" id="narr-sum"></span></summary><div id="narr-panel" style="margin-top:8px"></div></details>
+        <details class="panel sect"><summary>More</summary>
+          <div class="row" style="margin-top:8px"><button class="btn sm" id="rerender">Re-render</button><button class="btn sm" id="reveal">Reveal file</button><span class="grow"></span><button class="btn sm danger" id="delete">Delete</button></div>
+          <div class="small muted" style="margin-top:8px">Approving triggers the final trimmed export. Posting happens on the Publish page.</div></details>
       </div>
     </div>`);
   const v = $('#rv', m), ts = $('#ts', m), te = $('#te', m);
   const minLen = camp.min_len || 61, maxLen = camp.max_len || 0;
+  const trimOk = () => { const len = Number(te.value) - Number(ts.value); return len >= minLen && (!maxLen || len <= maxLen); };
   const updTrim = () => {
     let a = Number(ts.value), b = Number(te.value); if (b < a + 1) { b = a + 1; te.value = b; }
     $('#ts-v', m).textContent = fmtTime(a) + '.' + Math.round(a % 1 * 10); $('#te-v', m).textContent = fmtTime(b) + '.' + Math.round(b % 1 * 10);
-    const len = b - a; const ok = len >= minLen && (!maxLen || len <= maxLen);
-    $('#trim-len', m).innerHTML = `<span class="${ok ? 'ok-text' : 'bad-text'}">${len.toFixed(1)} s</span> (needs ${minLen}${maxLen ? '–' + maxLen : '+'} s)`;
+    const len = b - a;
+    $('#trim-len', m).innerHTML = `<span class="${trimOk() ? 'ok-text' : 'bad-text'}">${len.toFixed(1)} s</span> (needs ${minLen}${maxLen ? '–' + maxLen : '+'} s)`;
+    gate();
   };
+  const checks = () => Object.fromEntries($$('#checks input', m).map((i) => [i.dataset.i, i.checked]));
+  const gate = () => {   // Approve is enabled only when every reason to block it is gone; the first reason shows inline
+    const fails = (cl.rule_results || []).filter((r) => !r.ok);
+    const n = cl.narration || {};
+    let why = '';
+    if (cl.status === 'posted') why = 'Already posted.';
+    else if (!trimOk()) why = `The clip is ${(Number(te.value) - Number(ts.value)).toFixed(0)} s; it needs ${minLen}${maxLen ? '–' + maxLen : '+'} s. Open Trim.`;
+    else if (fails.length) why = 'Fix first: ' + fails[0].detail;
+    else if (n.enabled && n.status !== 'ready') why = 'Wait for the narrated intro to finish (or switch it off).';
+    else if (!Object.values(checks()).every(Boolean) || $$('#checks input', m).length !== Object.values(checks()).filter(Boolean).length) why = 'Tick every item above.';
+    $('#approve', m).disabled = !!why;
+    $('#approve-why', m).textContent = why;
+    $('#approve-why', m).className = 'small ' + (why ? 'warn-text' : 'ok-text');
+    if (!why) $('#approve-why', m).textContent = 'Ready to approve.';
+  };
+  $$('#checks input', m).forEach((i) => i.onchange = gate);
   ts.oninput = () => { updTrim(); v.currentTime = Number(ts.value); };
   te.oninput = () => { updTrim(); v.currentTime = Math.max(0, Number(te.value) - 1); };
-  updTrim();
   $('#ts-now', m).onclick = () => { ts.value = v.currentTime.toFixed(1); updTrim(); };
   $('#te-now', m).onclick = () => { te.value = v.currentTime.toFixed(1); updTrim(); };
   let looping = false;
@@ -578,33 +602,44 @@ async function openClip(id) {
   $('#shift-back', m).onclick = () => post(`/api/clips/${cl.id}/rerender`, { shift: -15 }).then(() => { closeModal(); toast('Re-cutting'); render(); }).catch(toastErr);
   $('#shift-fwd', m).onclick = () => post(`/api/clips/${cl.id}/rerender`, { shift: 15 }).then(() => { closeModal(); toast('Re-cutting'); render(); }).catch(toastErr);
   const renderRules = () => {
-    $('#rules', m).innerHTML = (cl.rule_results || []).map((r) => `<div class="rule ${r.ok ? '' : 'bad'}"><span class="dot"></span><span>${esc(r.detail)}</span></div>`).join('') || '<div class="muted small">Not checked yet</div>';
+    const rr = cl.rule_results || [], fails = rr.filter((r) => !r.ok);
+    const word = camp.workspace ? 'format checks' : 'campaign rules';
+    $('#rules-summary', m).innerHTML = rr.length ? (fails.length ? `<span class="bad-text">${fails.length} of ${rr.length} ${word} fail</span>` : `<span class="ok-text">Passes all ${rr.length} ${word}</span>`) : 'Rules not checked yet';
+    $('#rules', m).innerHTML = fails.length ? fails.map((r) => `<div class="rule bad"><span class="dot"></span><span>${esc(r.detail)}</span></div>`).join('') + `<details class="small muted" style="margin-top:6px"><summary>Show the ${rr.length - fails.length} that pass</summary>${rr.filter((r) => r.ok).map((r) => `<div class="rule"><span class="dot"></span><span>${esc(r.detail)}</span></div>`).join('')}</details>`
+      : rr.map((r) => `<div class="rule"><span class="dot"></span><span>${esc(r.detail)}</span></div>`).join('') || '<div class="muted small">Not checked yet</div>';
+    $('#rules-sect', m).open = fails.length > 0;
+    gate();
   };
-  renderRules();
-  get(`/api/clips/${cl.id}/hooks`).then((cands) => { $('#hook-cands', m).innerHTML = cands.map((h) => `<span class="chip" title="at ${fmtTime(h.t)}">${esc(h.text)}</span>`).join(''); $$('#hook-cands .chip', m).forEach((ch) => ch.onclick = () => { $('#hook', m).value = ch.textContent; }); });
+  renderRules(); updTrim();
+  get(`/api/clips/${cl.id}/hooks`).then((cands) => {
+    const alts = cands.filter((h) => h.text !== cl.hook).slice(0, 3);
+    $('#hook-cands', m).innerHTML = alts.map((h) => `<span class="chip" title="said at ${fmtTime(h.t)}">${esc(h.text)}</span>`).join('');
+    $$('#hook-cands .chip', m).forEach((ch) => ch.onclick = () => { $('#hook', m).value = ch.textContent; save({ hook: ch.textContent }).then(() => { ptBody(); toast('Hook set; post text rebuilt'); }); });
+  });
   const ptBody = () => {
     const pt = (cl.post_text || {})[tab] || { title: '', text: '' };
     $('#pt-body', m).innerHTML = `${tab === 'youtube' ? `<div class="field"><label>Title (≤100)</label><input type="text" id="pt-title" value="${esc(pt.title)}"></div>` : ''}
-      <div class="field"><label>${tab === 'youtube' ? 'Description' : 'Caption'} · must mention ${(camp.required_names || []).join(', ')} and include ${(camp.required_hashtags || []).join(' ')}</label><textarea id="pt-text">${esc(pt.text)}</textarea></div>`;
+      <div class="field"><label>${tab === 'youtube' ? 'Description' : 'Caption'}${camp.workspace ? '' : ` · must mention ${(camp.required_names || []).join(', ')} and include ${(camp.required_hashtags || []).join(' ')}`}</label><textarea id="pt-text">${esc(pt.text)}</textarea></div>`;
   };
   ptBody();
   $$('#pt-tabs button', m).forEach((b) => b.onclick = () => { collectPt(); tab = b.dataset.p; $$('#pt-tabs button', m).forEach((x) => x.classList.toggle('on', x === b)); ptBody(); });
   const collectPt = () => { const pt = { ...(cl.post_text || {}) }; pt[tab] = { title: $('#pt-title', m) ? $('#pt-title', m).value : '', text: $('#pt-text', m).value }; cl.post_text = pt; };
   $('#pt-save', m).onclick = async () => { collectPt(); if (await save({ post_text: cl.post_text, hook: $('#hook', m).value, title: (cl.post_text.youtube || {}).title || $('#hook', m).value })) toast('Post text saved'); };
   $('#pt-regen', m).onclick = async () => { if (await save({ hook: $('#hook', m).value })) { ptBody(); toast('Rebuilt'); } };
+  $('#hook', m).onchange = () => save({ hook: $('#hook', m).value }).then(ptBody);
   const renderNarr = () => {
     const n = cl.narration || {};
     const box = $('#narr-panel', m);
-    if (!cl.narration_allowed) { box.innerHTML = `<b>Narrated hook intro</b><div class="small muted" style="margin-top:4px">${esc(cl.narration_reason)}</div>`; return; }
-    box.innerHTML = `<div class="row between"><b>Narrated hook intro (optional)</b><span class="badge ${n.enabled ? (n.status === 'ready' ? 'ok' : (n.status === 'error' ? 'bad' : 'warn')) : ''}">${n.enabled ? (n.status || 'rendering') : 'off'}</span></div>
-      <div class="small muted" style="margin:4px 0 8px">A synthetic voice reads a one-sentence cliffhanger over the frozen first frame (3–6 s), then the clip plays. The hook is written by a model from this clip's transcript; edit it freely. Posts get the altered/synthetic content disclosure automatically.</div>
+    $('#narr-sum', m).textContent = !cl.narration_allowed ? '(not allowed here)' : (n.enabled ? `(${n.status === 'ready' ? 'on' : n.status === 'error' ? 'failed' : 'rendering…'})` : '(off)');
+    if (!cl.narration_allowed) { box.innerHTML = `<div class="small muted">${esc(cl.narration_reason)}</div>`; gate(); return; }
+    box.innerHTML = `<div class="small muted" style="margin:0 0 8px">A synthetic voice reads a one-sentence cliffhanger over the frozen first frame (3–6 s), then the clip plays. The hook is written by a model from this clip's transcript; edit it freely. Posts get the altered/synthetic content disclosure automatically.</div>
       <div class="field"><label>Hook (under 15 words, factual, no profanity)</label><input type="text" id="n-hook" value="${esc(n.chosen || '')}"></div>
       <div class="chips" id="n-alts">${(n.hooks || []).map((h) => `<span class="chip ${h === n.chosen ? 'on' : ''}">${esc(h)}</span>`).join('')}</div>
       <div class="row" style="margin-top:8px"><button class="btn sm" id="n-gen">Generate 3 hooks</button>
         <select id="n-engine" style="width:auto"><option value="">Voice: auto (Piper → system)</option><option value="piper" ${n.engine === 'piper' ? 'selected' : ''}>Piper (local)</option><option value="system" ${n.engine === 'system' ? 'selected' : ''}>System voice</option><option value="elevenlabs" ${n.engine === 'elevenlabs' ? 'selected' : ''}>ElevenLabs</option></select>
         <span class="grow"></span>
         ${n.enabled ? `<button class="btn sm" id="n-off">Turn narration off</button><button class="btn sm primary" id="n-on">Re-render intro</button>` : `<button class="btn sm primary" id="n-on">Enable narration & render intro</button>`}</div>
-      ${n.error ? `<div class="small bad-text" style="margin-top:6px">${esc(n.error)}</div>` : ''}
+      ${n.error ? `<div class="small bad-text" style="margin-top:6px">${esc(reasonOf(n.error))}</div>` : ''}
       ${n.enabled && n.status === 'ready' ? `<div class="row" style="margin-top:8px"><span class="small muted">Intro ${(n.intro_duration || 0).toFixed(1)} s (${esc(n.engine || '')} voice) · total ${fmtTime(cl.effective_duration)}</span><button class="btn sm" id="n-preview">▶ Preview with intro</button><button class="btn sm ghost" id="n-plain">▶ Original</button></div>` : ''}`;
     $$('#n-alts .chip', m).forEach((ch) => ch.onclick = () => { $('#n-hook', m).value = ch.textContent; });
     $('#n-gen', m).onclick = async () => { const b = $('#n-gen', m); b.disabled = true; b.textContent = 'Generating…'; try { const r = await post(`/api/clips/${cl.id}/narration/hooks`); cl.narration = r.narration; renderNarr(); toast('Hooks ready; pick or edit one'); } catch (e) { toastErr(e); b.disabled = false; b.textContent = 'Generate 3 hooks'; } };
@@ -612,20 +647,37 @@ async function openClip(id) {
     const off = $('#n-off', m); if (off) off.onclick = async () => { try { cl = await put(`/api/clips/${cl.id}/narration`, { enabled: false }); renderRules(); renderNarr(); } catch (e) { toastErr(e); } };
     const pv = $('#n-preview', m); if (pv) pv.onclick = () => { v.src = cl.narration_preview_url; v.play(); };
     const pl = $('#n-plain', m); if (pl) pl.onclick = () => { v.src = cl.video_url; v.play(); };
+    gate();
   };
   renderNarr();
   if ((cl.narration || {}).enabled && (cl.narration || {}).status === 'rendering') { const iv = setInterval(async () => { if (!$('#narr-panel')) return clearInterval(iv); const fresh = await get(`/api/clips/${cl.id}`); if ((fresh.narration || {}).status !== 'rendering') { clearInterval(iv); cl = fresh; renderRules(); renderNarr(); } }, 4000); }
-  const checks = () => Object.fromEntries($$('#checks input', m).map((i) => [i.dataset.i, i.checked]));
-  $('#approve', m).onclick = async () => {
+  const fcOpen = $('#fc-open', m);
+  if (fcOpen) fcOpen.onclick = () => { const box = $('#fc-inline', m); box.classList.toggle('hidden'); if (!box.innerHTML) facecamPicker(cl.source, box, (saved) => { $('#fc-banner', m).innerHTML = saved ? '<b class="ok-text">Facecam saved.</b> <span class="small muted">Use Re-render (under More) to apply it to this clip; new clips use it automatically.</span>' : '<span class="small muted">Gameplay-only layout kept for this streamer.</span>'; }); };
+  const approve = async () => {
+    if ($('#approve', m).disabled) { toast($('#approve-why', m).textContent, 'warn'); return; }
     collectPt();
     if (!(await save({ post_text: cl.post_text, hook: $('#hook', m).value, trim_start: Number(ts.value), trim_end: Number(te.value), checklist: checks() }))) return;
-    try { await post(`/api/clips/${cl.id}/approve`, { checklist: checks() }); closeModal(); toast('Approved. Final export is being prepared.'); render(); }
+    try { await post(`/api/clips/${cl.id}/approve`, { checklist: checks() }); toast('Approved. Final export is being prepared.'); if (nextId) openClip(nextId); else { closeModal(); render(); } }
     catch (e) { const f = e.data && e.data.failed; toast((e.data && e.data.message) || e.message + (f && f.length ? ': ' + f.map((x) => x.detail).join('; ') : ''), 'err'); cl = await get(`/api/clips/${cl.id}`); renderRules(); }
   };
-  $('#reject', m).onclick = () => post(`/api/clips/${cl.id}/reject`).then(() => { closeModal(); render(); }).catch(toastErr);
+  const reject = () => { if (cl.status === 'posted') return; post(`/api/clips/${cl.id}/reject`).then(() => { toast('Rejected'); if (nextId) openClip(nextId); else { closeModal(); render(); } }).catch(toastErr); };
+  $('#approve', m).onclick = approve;
+  $('#reject', m).onclick = reject;
+  const nb = $('#next-clip', m); if (nb) nb.onclick = () => openClip(nextId);
   $('#rerender', m).onclick = () => post(`/api/clips/${cl.id}/rerender`).then(() => { closeModal(); toast('Re-rendering'); render(); }).catch(toastErr);
   $('#reveal', m).onclick = () => post(`/api/clips/${cl.id}/reveal`).catch(toastErr);
   $('#delete', m).onclick = async () => { try { await del(`/api/clips/${cl.id}`); closeModal(); render(); } catch (e) { if (e.status === 409 && await confirmDlg(e.data.message, 'Delete anyway')) { await del(`/api/clips/${cl.id}?force=true`); closeModal(); render(); } else toastErr(e); } };
+  // keyboard: space play/pause · A approve · R reject · → next clip (ignored while typing)
+  const onKey = (e) => {
+    if (!document.body.contains(m)) { document.removeEventListener('keydown', onKey); return; }
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+    if (e.key === ' ') { e.preventDefault(); if (v.paused) v.play(); else v.pause(); }
+    else if (e.key === 'a' || e.key === 'A') { e.preventDefault(); approve(); }
+    else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); reject(); }
+    else if (e.key === 'ArrowRight' && nextId) { e.preventDefault(); openClip(nextId); }
+    else if (e.key === 'Escape') closeModal();
+  };
+  document.addEventListener('keydown', onKey);
 }
 
 // ---------------------------------------------------------------- Publish

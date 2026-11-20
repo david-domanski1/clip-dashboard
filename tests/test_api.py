@@ -107,3 +107,16 @@ def test_today_checklist_counts_and_attention(client, fresh_db, campaign):
     assert any(a["kind"] == "video" for a in t["attention"])
     # the live video is scanning with no job behind it, so it is also flagged as interrupted
     assert t["submissions"]["count"] == 0 and t["submissions"]["soonest"] is None
+
+
+def test_source_no_facecam_is_remembered_and_clip_reports_it(client, fresh_db, campaign):
+    sid = fresh_db.insert("sources", {"campaign_id": campaign["id"], "kind": "twitch_channel", "url": "https://twitch.tv/lacy", "external_id": "lacy", "name": "LACY"})
+    cid = make_clip(fresh_db, campaign)
+    fresh_db.update("videos", fresh_db.get("clips", cid)["video_id"], {"source_id": sid})
+    c = client.get(f"/api/clips/{cid}").json()
+    assert c["source"]["facecam_decided"] is False and c["rule_count"] == 0  # not validated until rendered
+    r = client.put(f"/api/sources/{sid}", json={"facecam": {"none": True}, "layout": "full"}).json()
+    assert r["facecam"] == {"none": True} and r["layout"] == "full"
+    c = client.get(f"/api/clips/{cid}").json()
+    assert c["source"]["facecam_decided"] is True and c["source"]["facecam"] is None
+    assert client.put(f"/api/sources/{sid}", json={"facecam": {"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.3}}).json()["layout"] == "stacked"
