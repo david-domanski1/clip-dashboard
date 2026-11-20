@@ -64,6 +64,7 @@ def state():
         "posts_scheduled": counts["posts:status='scheduled'"],
         "submissions_due": counts["posts:status='live' AND submitted_at IS NULL AND submission_deadline IS NOT NULL"],
         "setup_done": bool(db.get_setting("setup_done", False)), "os": platform.system(),
+        "watch_interval_min": db.get_setting("watch_interval_min", 10),
     }
 
 
@@ -84,6 +85,11 @@ def today(campaign_id: int | None = None):
     approved = db.execute(f"SELECT COUNT(*) c FROM clips WHERE {cw} AND status='approved'", params).fetchone()["c"]
     due = db.rows("posts", f"{cw} AND status='live' AND submitted_at IS NULL AND submission_deadline IS NOT NULL", params,
                   order="submission_deadline")
+    new_videos = []
+    for v in db.rows("videos", f"{cw} AND status='new'", params, order="id DESC")[:20]:
+        src = db.get("sources", v["source_id"]) if v.get("source_id") else None
+        new_videos.append({"id": v["id"], "title": v.get("title") or v["url"], "source": (src or {}).get("name"), "live": bool(v.get("live")),
+                           "duration": v.get("duration"), "published_at": v.get("published_at"), "platform": v["platform"]})
     srcs = []
     for s in db.rows("sources", f"{cw} AND watch=1", params, order="id"):
         live = db.execute("SELECT COUNT(*) c FROM videos WHERE source_id=? AND live=1 AND status NOT IN ('done','error','skipped')",
@@ -116,7 +122,7 @@ def today(campaign_id: int | None = None):
     return {
         "review": {"count": len(pending), "best": best}, "publish": {"count": approved},
         "submissions": {"count": len(due), "soonest": due[0]["submission_deadline"] if due else None, "soonest_post_id": due[0]["id"] if due else None},
-        "sources": srcs, "attention": attention,
+        "sources": srcs, "attention": attention, "new_videos": new_videos,
         "workspace": bool(campaign and campaign.get("kind") == "streamer"),
     }
 
@@ -345,7 +351,7 @@ def add_source(body: dict):
     if p["kind"].endswith("_video"):
         if db.is_workspace(db.get("campaigns", cid)) and not body.get("clip_terms_ok"):
             _bad("Tick “This creator publicly allows clipping” before adding a video to the Streamer clips workspace.")
-        v = pipeline.add_video(cid, p["url"], window=body.get("window"))
+        v = pipeline.add_video(cid, p["url"], window=body.get("window"), queue=bool(body.get("scan_now")))
         return {"video": v}
     campaign = db.get("campaigns", cid)
     workspace = db.is_workspace(campaign)
@@ -468,12 +474,54 @@ def add_video(body: dict):
         _bad(str(e))
 
 
+@app.get("/api/videos/{vid}/section")
+def video_section(vid: int, refresh: bool = False):
+    """Everything the section picker needs: length, live state, scanned ranges, moments and the heat strip so far."""
+    v = db.get("videos", vid) or _404()
+    if refresh or not v.get("duration"):          # a live stream's VOD keeps growing; the picker asks for a refresh when it opens
+        try:
+            v = pipeline.refresh_video_info(vid)
+        except tools.ToolError:
+            pass
+    dens = pipeline.load_density(v)
+    running = db.one("jobs", "type='chat_density' AND status IN ('queued','running') AND payload LIKE ?", (f'%"video_id": {vid}%',))
+    duration = float(v.get("duration") or 0)
+    settings = db.all_settings()
+    w = v.get("scan_window") if isinstance(v.get("scan_window"), dict) else {}
+    return {
+        "id": vid, "title": v.get("title"), "url": v["url"], "platform": v["platform"], "duration": duration, "live": bool(v.get("live")), "status": v["status"], "stage": v.get("stage"),
+        "progress": v.get("progress"), "scanned_ranges": v.get("scanned_ranges") or [],
+        "moments": [{"id": m["id"], "t": m["t"], "score": m["score"], "flags": m.get("flags") or []} for m in db.rows("moments", "video_id=?", (vid,), order="t")],
+        "density": {**dens, "complete": pipeline.density_complete(dens, duration) if duration else False, "loading": bool(running),
+                    "loading_message": (running or {}).get("message")},
+        "clip_len": float(w.get("clip_len") or settings.get("clip_len") or 90), "lead_in": float(w.get("lead_in") if w.get("lead_in") is not None else settings.get("lead_in", 25)),
+        "last_section": [w.get("start"), w.get("end")] if w.get("kind") == "range" else None,
+    }
+
+
+@app.post("/api/videos/{vid}/density")
+def load_density(vid: int):
+    """Start (or continue) loading the heat strip in the background."""
+    v = db.get("videos", vid) or _404()
+    if pipeline.density_complete(pipeline.load_density(v), float(v.get("duration") or 0)) and v.get("duration") and not v.get("live"):
+        return {"job_id": None, "complete": True}
+    if db.one("jobs", "type='chat_density' AND status IN ('queued','running') AND payload LIKE ?", (f'%"video_id": {vid}%',)):
+        return {"job_id": None, "running": True}
+    return {"job_id": jobs.enqueue("chat_density", {"video_id": vid})}
+
+
 @app.post("/api/videos/{vid}/rescan")
 def rescan_video(vid: int, body: dict | None = None):
     v = db.get("videos", vid) or _404()
     body = body or {}
     try:
         w = pipeline.parse_window(body.get("window", "auto"))
+        if body.get("preset"):
+            s_, e_ = pipeline.section_bounds(float(v.get("duration") or 0), body["preset"])
+            w = {**w, "kind": "range", "start": s_, "end": e_}
+        for k in ("clip_len", "lead_in"):
+            if body.get(k) not in (None, ""):
+                w[k] = float(body[k])
     except ValueError as e:
         _bad(str(e))
     data = {"status": "queued", "stage": "Waiting to scan", "error": None, "progress": 0, "scan_window": w}
@@ -550,12 +598,14 @@ def media_moment(mid: int):
 
 
 @app.post("/api/moments/{mid}/render")
-def render_moment(mid: int):
+def render_moment(mid: int, body: dict | None = None):
+    """Render one moment. Optional clip_len / lead_in (seconds) from the section picker; else the video's last choice."""
     m = db.get("moments", mid) or _404()
     existing = db.one("clips", "moment_id=? AND status!='error'", (mid,))
     if existing:
         return {"clip_id": existing["id"], "existing": True}
-    return {"clip_id": pipeline.queue_render(mid)}
+    body = body or {}
+    return {"clip_id": pipeline.queue_render(mid, body.get("clip_len"), body.get("lead_in"))}
 
 
 @app.post("/api/videos/{vid}/render_custom")
@@ -564,7 +614,7 @@ def render_custom(vid: int, body: dict):
     v = db.get("videos", vid) or _404()
     t = float(body.get("t") or 0)
     mid = db.insert("moments", {"video_id": vid, "t": t, "score": 0, "reasons": ["Picked by you"], "chat_words": [], "rank": 99})
-    return {"clip_id": pipeline.queue_render(mid)}
+    return {"clip_id": pipeline.queue_render(mid, body.get("clip_len"), body.get("lead_in"))}
 
 
 def _fmt(sec: float) -> str:

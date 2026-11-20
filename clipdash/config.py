@@ -23,7 +23,7 @@ DEFAULT_SETTINGS = {
     "chat_spike_factor": 3.0,
     "audio_spike_db": 8.0,
     "max_moments": 12,
-    "auto_render_top": 1,
+    "auto_render_top": 0,      # nothing renders until a person clicks Render (set 1 to auto-render the best moment)
     "spam_fraction": 0.5,
     "min_words_per_min": 20,
     "min_speech_fraction": 0.12,
@@ -34,14 +34,15 @@ DEFAULT_SETTINGS = {
     "skip_start": 120,
     "min_gap": 90,
     "bin_seconds": 10,
-    "lead_in": 25,
+    "lead_in": 25,             # seconds before the moment the clip starts
+    "clip_len": 90,            # default clip length (the section picker offers 61 / 90 / 120 / custom)
     "download_length": 90,     # seconds fetched per moment; the clip is trimmed inside this window
     "whisper_model": "small",
     "cache_cap_mb": 3000,
     "keep_segments": False,
     "censor_captions": False,
     "suggested_hooks": False,  # model-written hooks are off; only transcript sentences are used
-    "watch_interval_min": 30,
+    "watch_interval_min": 10,
     "gta_only": True,
     "facecam_fraction": 0.32,
 }

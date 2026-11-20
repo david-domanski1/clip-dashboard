@@ -11,30 +11,39 @@ every post is something you approved.
 
 The sidebar has six places: **Today**, **Review**, **Publish**, **Submissions**, **Sources** and **Settings**. Today is a
 checklist that drives the day: clips waiting for you, approved clips not yet posted, posted clips not yet submitted (with
-the soonest countdown), the channels being watched (live ones marked LIVE) and anything that failed, each with one button.
+the soonest countdown), the channels being watched (live ones marked LIVE), new videos found (each with *Pick a section*)
+and anything that failed, each with one button.
 
 1. **Campaign** – you paste the campaign's rules (creator, required name and hashtag, minimum length,
    platforms, footage dates, submission deadline, pay). Rules are data: the app checks the ones a machine
    can check and shows the rest as a checklist.
-2. **Sources** – YouTube/Twitch channels or single videos attached to the campaign. Channels are watched for
-   new GTA VI videos. Each source opens to show its videos and the ranked moments found in each one: a thumbnail,
-   a plain label (*Chat exploded*, *Big reaction*, *Some reaction*, *Quiet*) and what chat was saying. Moments
-   where the streamer is not talking or chat is spam are tucked under *show skipped*. A visual picker sets where
-   the streamer's facecam sits.
-3. **Clips** – each video is scanned for moments (chat spikes, YouTube "most replayed", transcript cues,
+2. **Sources** – YouTube/Twitch channels or single videos attached to the campaign. Channels are checked every
+   10 minutes (Settings → Tuning), live streams included; a new VOD or video shows on Today as *New video found*
+   and nothing is searched until you **pick a section**. Each source opens to show its videos and the ranked
+   moments found in each one: a thumbnail, the score with a bar, a plain label (*Chat exploded*, *Big reaction*,
+   *Some reaction*, *Quiet*) and what chat was saying; hover for the numbers behind it. Moments where the streamer
+   is not talking or chat is spam are tucked under *show skipped*. A visual picker sets where the streamer's
+   facecam sits.
+3. **Pick a section** – one panel per video: a timeline of the whole VOD with a chat-activity heat strip (loaded in
+   the background, 2 hours at a time for Twitch; YouTube's *most replayed* curve for uploads), drag handles or typed
+   start/end for the section to search, presets (*last 30 min / 1 h / 2 h / whole VOD*), a clip length (61 / 90 /
+   120 s or custom) and the lead-in (default 25 s before the moment). *Find moments* reads only that section's chat
+   and audio, so a 2-hour section takes about half a minute. Nothing renders until you click **Render** on a moment
+   (auto-render stays available as an off-by-default setting).
+4. **Clips** – each searched section is scored for moments (chat spikes, YouTube "most replayed", transcript cues,
    loudness), only the 90-second segments around the best moments are downloaded, Whisper transcribes them,
    captions are burned in and the clip is laid out 9:16 (facecam on top, gameplay below).
-4. **Review** – the clip plays full height on the left; on the right: the hook (with three alternatives), the
+5. **Review** – the clip plays full height on the left; on the right: the hook (with three alternatives), the
    checklist, Approve / Reject. Trim, per-platform post text and rule results sit in collapsed sections below;
    rules show as one green line (*Passes all 11 campaign rules*) or a red list. Approve stays disabled, with the
    reason next to it, until the checklist is ticked and every rule passes. Keyboard: space play/pause, A approve,
    R reject, → next clip.
-5. **Publish** – post now or schedule (date, time, time zone) to one account per platform through one of
+6. **Publish** – post now or schedule (date, time, time zone) to one account per platform through one of
    three routes: *direct* (your own developer app on the official API), *service* (an audited third-party
    posting API), *assisted* (the app reveals the file, copies the caption and opens the upload page).
-6. **Submissions** – when a post goes live, a countdown starts (30 minutes for LACY). One click copies the
+7. **Submissions** – when a post goes live, a countdown starts (30 minutes for LACY). One click copies the
    link and opens the campaign's submission page; tick *Submitted* when done.
-7. **Settings** – tuning, Setup (tools and credentials), Accounts and Stats as tabs.
+8. **Settings** – tuning, Setup (tools and credentials), Accounts and Stats as tabs.
 
 Status words are plain: *Making clip…*, *Ready to review*, *Finding moments…*, *Posted*, *Needs your upload*. A failure
 always shows its cause in one sentence with a *Retry* button (the raw error stays in the tooltip). If the app is closed
@@ -78,22 +87,17 @@ First launch opens **Settings → Setup**:
    Rewards pages hide the rules until you join: the form says so and leaves hashtag, name and date fields empty
    until you paste the rules. Check every field against the campaign page, especially the required hashtag,
    minimum length (61 s by default), footage start date, submission URL and deadline. Save.
-2. **Sources → paste a video URL → Add.** Pick a scan window first: *Auto* scans the last 2 hours of any VOD
-   longer than 4 hours (a 2-hour window of Twitch chat downloads in seconds, so clips are reviewable in about
-   2 minutes) and the whole video otherwise; *Last 6 hours*, *Whole video* and *Custom start/end* are there too.
-   A stream that is still live works: the latest window of the growing VOD is scanned. After a windowed scan,
-   **Scan the rest** continues in 2-hour chunks in the background, merging moments and skipping ranges already
-   scanned. Videos published before the campaign's footage start date are skipped silently at add/watch time
-   (logged, not listed); a *Show skipped (N)* toggle at the bottom of Sources reveals them with a
-   *Scan anyway* override. The first scan also loads
-   the Whisper model, which takes a minute.
-   After a scan the video (inside its source card) shows its **ranked moments**: thumbnail, timestamp, how strong
-   the reaction was and what chat was saying (the numbers are in the tooltip). Only the single best moment is rendered automatically (Settings → *auto-render top N*,
-   default 1); every other moment has a **Render** button, plus **Render next best**. Moments where the streamer
-   is barely talking (Silero VAD on 40 s of audio) or where chat is one repeated message are listed under *show skipped* as
-   *Skipped: streamer not talking* / *Skipped: chat spam*, so an asleep streamer with a busy chat no longer wins. Queued or running renders
-   can be cancelled from the same list. On an Apple Silicon Mac a 2-hour window scans in about 30 s and the first
-   clip is reviewable in about 2 minutes (hardware H.264 encoding; software fallback elsewhere).
+2. **Sources → paste a video URL → Add**, or wait for a watched channel to surface it on Today as *New video
+   found*. Either way click **Pick a section**: drag the handles (or type start/end) over the part of the VOD you
+   want searched, guided by the chat heat strip, pick the clip length and lead-in, then **Find moments**. The
+   panel shows the ranked moments with scores; click **Render** on the ones you want (a 90-second clip renders in
+   about a minute and a half on an Apple Silicon Mac). Videos published before the campaign's footage start date
+   are skipped silently at add/watch time (logged, not listed); a *Show skipped (N)* toggle at the bottom of
+   Sources reveals them, and *Pick a section* there overrides the date window. The first render also loads the
+   Whisper model, which takes a minute.
+
+![Pick a section](docs/screenshots/section.png)
+
    For a channel instead of a single video, add `youtube.com/@name` or `twitch.tv/name` in the same box;
    the suggestion chips resolve IShowSpeed, CaseOh, LACY and Kai Cenat by lookup.
 

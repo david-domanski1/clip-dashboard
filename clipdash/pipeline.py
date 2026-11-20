@@ -3,6 +3,7 @@ finalize (trim), watch sources for new videos. Each step reports progress into t
 from __future__ import annotations
 
 import json
+import re
 import logging
 import shutil
 from datetime import datetime, timedelta, timezone
@@ -41,14 +42,62 @@ def parse_window(w) -> dict:
     if isinstance(w, str):
         if w == "whole":
             return {"kind": "whole"}
-        if w.startswith("last") and w.endswith("h"):
-            return {"kind": "last", "hours": float(w[4:-1])}
+        m = re.fullmatch(r"last(\d+(?:\.\d+)?)(h|m|min)", w)
+        if m:
+            n = float(m.group(1))
+            return {"kind": "last", "hours": n if m.group(2) == "h" else n / 60}
         raise ValueError(f"Unknown scan window {w!r}")
     if isinstance(w, dict):
+        extra = {k: float(w[k]) for k in ("clip_len", "lead_in") if w.get(k) not in (None, "")}
         if w.get("kind") in ("auto", "whole", "last"):
-            return w
-        return {"kind": "range", "start": float(w.get("start") or 0), "end": float(w["end"]) if w.get("end") not in (None, "") else None}
+            return {**w, **extra}
+        return {"kind": "range", "start": float(w.get("start") or 0), "end": float(w["end"]) if w.get("end") not in (None, "") else None, **extra}
     raise ValueError("Bad scan window")
+
+
+SECTION_PRESETS = {"last30m": 1800.0, "last1h": 3600.0, "last2h": 7200.0}
+MIN_SECTION_S = 60.0
+
+
+def section_bounds(duration: float, preset: str | None = None, start=None, end=None) -> tuple[float, float]:
+    """The part of the VOD to search. preset: 'last30m' | 'last1h' | 'last2h' | 'whole', or explicit start/end seconds.
+    Always clamped to [0, duration]; a section shorter than a minute is widened to a minute where possible."""
+    duration = max(0.0, float(duration or 0))
+    if preset and preset != "whole":
+        if preset not in SECTION_PRESETS:
+            raise ValueError(f"Unknown section preset {preset!r}")
+        s, e = max(0.0, duration - SECTION_PRESETS[preset]), duration
+    elif preset == "whole" or (start is None and end is None):
+        s, e = 0.0, duration
+    else:
+        s = min(duration, max(0.0, float(start or 0)))
+        e = duration if end in (None, "") else min(duration, max(0.0, float(end)))
+    if e < s:
+        s, e = e, s
+    if e - s < MIN_SECTION_S:
+        s = max(0.0, min(s, duration - MIN_SECTION_S))
+        e = min(duration, s + MIN_SECTION_S)
+    if e <= s:
+        raise ValueError("The section is empty; the video has no length yet")
+    return round(s, 1), round(e, 1)
+
+
+CLIP_PAD_S = 2.0      # extra seconds downloaded so the trimmed clip can be exactly clip_len long
+
+
+def clip_bounds(t: float, clip_len: float, lead_in: float, duration: float | None = None) -> tuple[float, float, float]:
+    """Where to cut for a moment at t: (source_start, source_length, trim_end). The clip starts lead_in seconds before
+    the moment and runs clip_len seconds; both are clamped so the cut stays inside the video."""
+    clip_len = max(10.0, float(clip_len))
+    lead_in = min(max(0.0, float(lead_in)), clip_len)
+    length = clip_len + CLIP_PAD_S
+    start = max(0.0, float(t) - lead_in)
+    if duration:
+        duration = float(duration)
+        length = min(length, duration)
+        start = min(start, max(0.0, duration - length))
+        clip_len = min(clip_len, length)
+    return round(start, 1), round(length, 1), round(clip_len, 1)
 
 
 def resolve_window(w: dict, duration: float) -> tuple[float, float]:
@@ -318,7 +367,7 @@ def scan_video(video_id: int, progress, window=None) -> None:
     if not moments:
         _set_video(video_id, status="done", stage=f"Scanned {label}: no strong moments" + ("" if covered else " · more of the VOD can be scanned"))
         return
-    top = int(settings.get("auto_render_top", 1))
+    top = int(settings.get("auto_render_top", 0))
     rendered = 0
     for m in db.rows("moments", "id IN (" + ",".join("?" * len(new_ids)) + ")", tuple(new_ids), order="score DESC"):
         if rendered >= top:
@@ -328,7 +377,7 @@ def scan_video(video_id: int, progress, window=None) -> None:
         queue_render(m["id"])
         rendered += 1
     if rendered == 0:
-        _set_video(video_id, status="done", stage=stage + " · nothing auto-rendered (all flagged); pick one to render")
+        _set_video(video_id, status="done", stage=stage + (" · pick one to render" if top == 0 else " · nothing auto-rendered (all flagged); pick one to render"))
 
 
 def render_next_best(video_id: int) -> int | None:
@@ -358,18 +407,23 @@ def scan_rest(video_id: int) -> int:
 
 # ---------------------------------------------------------------- render
 
-def queue_render(moment_id: int) -> int:
+def render_params(video: dict, clip_len=None, lead_in=None) -> tuple[float, float]:
+    """Clip length and lead-in for a video: explicit values, else what its last section search chose, else settings."""
+    settings = db.all_settings()
+    w = video.get("scan_window") if isinstance(video.get("scan_window"), dict) else {}
+    cl = clip_len if clip_len not in (None, "") else (w.get("clip_len") or settings.get("clip_len") or settings.get("download_length") or 90)
+    li = lead_in if lead_in not in (None, "") else (w.get("lead_in") if w.get("lead_in") is not None else settings.get("lead_in", 25))
+    return float(cl), float(li)
+
+
+def queue_render(moment_id: int, clip_len=None, lead_in=None) -> int:
     from . import jobs
     m = db.get("moments", moment_id)
     video = db.get("videos", m["video_id"])
-    settings = db.all_settings()
-    lead_in = float(settings["lead_in"])
-    length = float(settings["download_length"])
-    start = max(0.0, m["t"] - lead_in)
-    if video.get("duration"):
-        start = min(start, max(0.0, float(video["duration"]) - length))
+    cl, li = render_params(video, clip_len, lead_in)
+    start, length, trim_len = clip_bounds(m["t"], cl, li, video.get("duration"))
     clip_id = db.insert("clips", {"video_id": video["id"], "campaign_id": video["campaign_id"], "moment_id": moment_id,
-                                  "source_start": start, "source_length": length, "status": "rendering"})
+                                  "source_start": start, "source_length": length, "trim_end": trim_len, "status": "rendering"})
     db.update("moments", moment_id, {"status": "queued"})
     _set_video(video["id"], status="rendering", stage="Rendering clips")
     jobs.enqueue("render_clip", {"clip_id": clip_id})
@@ -444,7 +498,8 @@ def render_clip(clip_id: int, progress) -> None:
     creator_name = (source or {}).get("name") if campaign.get("kind") == "streamer" else campaign["creator"]
     hook = clip.get("hook") or cap.default_hook(creator_name or campaign["creator"], words, chat_words)
     post_text = cap.build_all(campaign, hook, chat_words, source=source)
-    trim_end = min(duration, float(campaign.get("max_len") or duration))
+    wanted = float(clip.get("trim_end") or 0) or max(0.0, float(clip.get("source_length") or duration) - CLIP_PAD_S)
+    trim_end = min(duration, wanted, float(campaign.get("max_len") or duration))
     fields = {
         "path": str(out), "thumb": str(thumb) if thumb else None, "duration": duration, "width": w, "height": h,
         "transcript": words, "hook": hook, "title": post_text.get("youtube", {}).get("title", hook),
@@ -572,22 +627,47 @@ def add_video(campaign_id: int, url: str, source_id: int | None = None, queue: b
     platform = p["kind"].split("_")[0]
     existing = db.one("videos", "campaign_id=? AND platform=? AND external_id=?", (campaign_id, platform, p["id"]))
     if existing:
-        if queue and existing["status"] in ("skipped", "error", "done", "scanned"):
+        if queue and existing["status"] in ("skipped", "error", "done", "scanned", "new"):
             db.update("videos", existing["id"], {"status": "queued", "stage": "Waiting to scan", "error": None,
                                                  "scan_window": w, "override": int(override or existing.get("override") or 0)})
             jobs.enqueue("scan_video", {"video_id": existing["id"], "window": w})
         return db.get("videos", existing["id"])
-    vid = db.insert("videos", {"campaign_id": campaign_id, "source_id": source_id, "platform": platform,
-                               "external_id": p["id"], "url": p["url"], "title": p["url"], "status": "queued",
-                               "stage": "Waiting to scan", "scan_window": w, "override": int(override)})
+    row = {"campaign_id": campaign_id, "source_id": source_id, "platform": platform, "external_id": p["id"], "url": p["url"],
+           "title": p["url"], "status": "queued" if queue else "new", "stage": "Waiting to scan" if queue else NEW_STAGE,
+           "scan_window": w, "override": int(override)}
+    if not queue:
+        # Read title, length and live state now so the section picker can open straight away.
+        try:
+            info = sources.video_info(p["url"])
+            row.update({"title": info.get("title") or p["url"], "channel": info.get("channel"), "published_at": info.get("published_at"),
+                        "duration": info.get("duration"), "is_stream": int(info.get("is_stream") or 0), "live": int(bool(info.get("live_now")))})
+        except tools.ToolError as e:
+            row.update({"stage": f"{NEW_STAGE} (details unavailable: {str(e)[-120:]})"})
+    vid = db.insert("videos", row)
     if queue:
         jobs.enqueue("scan_video", {"video_id": vid, "window": w})
     return db.get("videos", vid)
 
 
+NEW_STAGE = "New video found — pick a section to search"
+
+
+def refresh_video_info(video_id: int) -> dict:
+    """Re-read title/length/live state (a live stream's VOD keeps growing)."""
+    video = db.get("videos", video_id)
+    if not video:
+        return {}
+    info = sources.video_info(video["url"])
+    _set_video(video_id, title=info.get("title") or video.get("title"), channel=info.get("channel") or video.get("channel"),
+               published_at=info.get("published_at") or video.get("published_at"), duration=info.get("duration") or video.get("duration"),
+               is_stream=max(int(video.get("is_stream") or 0), int(info.get("is_stream") or 0)), live=int(bool(info.get("live_now"))))
+    return db.get("videos", video_id)
+
+
 def check_sources(progress, campaign_id: int | None = None) -> None:
-    """Queue new videos from watched channels. Videos published before the campaign's footage window are recorded
-    as 'skipped' (with an override in the UI) instead of being scanned."""
+    """List new videos (and in-progress streams) from watched channels as 'new' so the person picks a section to
+    search; nothing is scanned automatically. Videos published before the campaign's footage window are recorded as
+    'skipped' (with an override in the UI)."""
     from . import jobs
     where = "watch=1" + (" AND campaign_id=?" if campaign_id else "")
     params = (campaign_id,) if campaign_id else ()
@@ -621,11 +701,11 @@ def check_sources(progress, campaign_id: int | None = None) -> None:
                 log.info("Skipped %s (%s): %s", v["url"], v.get("title"), row["stage"])
                 db.insert("videos", row)   # kept out of the Pipeline list; visible under 'Show skipped' with an override
                 continue
-            if added >= 3:
+            if added >= 5:
                 break
-            row.update({"status": "queued", "stage": "Waiting to scan", "scan_window": {"kind": "auto"}})
-            vid = db.insert("videos", row)
-            jobs.enqueue("scan_video", {"video_id": vid, "window": {"kind": "auto"}})
+            row.update({"status": "new", "stage": NEW_STAGE, "scan_window": {"kind": "auto"}})
+            db.insert("videos", row)
+            log.info("New video found: %s (%s)%s", v.get("title"), v["url"], " LIVE" if v.get("live_now") else "")
             added += 1
         db.update("sources", s["id"], {"last_checked": db.now()})
 
@@ -657,3 +737,100 @@ def clip_public(clip: dict) -> dict:
         from .errors import friendly
         c["error_text"] = friendly(clip.get("error"))
     return c
+
+
+# ---------------------------------------------------------------- chat density for the section picker's heat strip
+
+DENSITY_BIN_S = 60
+
+
+def density_path(video: dict) -> Path:
+    return _video_dir(video) / "density.json"
+
+
+def load_density(video: dict) -> dict:
+    p = density_path(video)
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except ValueError:
+            pass
+    return {"bin_s": DENSITY_BIN_S, "bins": [], "covered": [], "source": None}
+
+
+def _density_add(dens: dict, rows: list[list], start: float, end: float, duration: float) -> None:
+    n = int(duration // DENSITY_BIN_S) + 1
+    bins = list(dens.get("bins") or [])
+    bins += [0] * (n - len(bins))
+    for t, _msg in rows:
+        if start <= t <= end and 0 <= t < duration + DENSITY_BIN_S:
+            bins[min(n - 1, int(t // DENSITY_BIN_S))] += 1
+    dens["bins"] = bins
+    dens["covered"] = merge_ranges(dens.get("covered") or [], (start, end))
+    dens["source"] = "chat"
+
+
+def density_complete(dens: dict, duration: float) -> bool:
+    return sum(e - s for s, e in (dens.get("covered") or [])) >= float(duration or 0) - DENSITY_BIN_S
+
+
+def chat_density(video_id: int, progress) -> None:
+    """Fill the heat strip: Twitch chat in 2-hour chunks (most recent first, reusing chat already downloaded by scans),
+    YouTube live chat as a whole, else YouTube's 'most replayed' curve. Written after every chunk so the UI fills in."""
+    from . import jobs
+    video = db.get("videos", video_id)
+    if not video:
+        return
+    duration = float(video.get("duration") or 0)
+    if duration <= 0:
+        video = refresh_video_info(video_id)
+        duration = float(video.get("duration") or 0)
+    if duration <= 0:
+        raise tools.ToolError("The video has no length yet")
+    d = _video_dir(video)
+    dens = load_density(video)
+    path = density_path(video)
+    write = lambda: path.write_text(json.dumps(dens))
+    if video["platform"] == "twitch":
+        # fold in chat files that scans already downloaded
+        for f in sorted(d.glob("chat_*_*.json")):
+            try:
+                _s, _e = f.stem.split("_")[1:3]
+                s_, e_ = float(_s), float(_e)
+            except ValueError:
+                continue
+            if any(a <= s_ and e_ <= b for a, b in dens.get("covered") or []):
+                continue
+            _density_add(dens, chat.load(f), s_, e_, duration)
+        if (d / "chat.json").exists():
+            _density_add(dens, chat.load(d / "chat.json"), 0.0, duration, duration)
+        write()
+        chunks = unscanned_chunks(dens.get("covered") or [], duration)
+        for i, (s_, e_) in enumerate(chunks, 1):
+            jobs.check_cancelled()
+            progress(i / (len(chunks) + 1), f"Loading chat activity {fmt_ts(s_)}–{fmt_ts(e_)} ({i} of {len(chunks)})")
+            win = d / f"chat_{int(s_)}_{int(e_)}.json"
+            if not win.exists():
+                chat.download_twitch_chat(video["external_id"], win, start=s_, end=e_)
+            _density_add(dens, chat.load(win), s_, e_, duration)
+            write()
+    else:
+        info = sources.video_info(video["url"])
+        if info.get("has_live_chat") or video.get("is_stream"):
+            chat_path = d / "chat.json"
+            if not chat_path.exists():
+                progress(0.2, "Downloading YouTube chat replay")
+                chat.download_youtube_chat(video["url"], chat_path)
+            _density_add(dens, chat.load(chat_path), 0.0, duration, duration)
+        elif info.get("heatmap"):
+            n = int(duration // DENSITY_BIN_S) + 1
+            bins = [0.0] * n
+            for seg in info["heatmap"]:
+                a, b, v = float(seg.get("start_time", 0)), float(seg.get("end_time", 0)), float(seg.get("value", 0))
+                for k in range(int(a // DENSITY_BIN_S), min(n, int(b // DENSITY_BIN_S) + 1)):
+                    bins[k] = max(bins[k], v)
+            dens.update({"bins": bins, "covered": [[0.0, duration]], "source": "heatmap"})
+        else:
+            dens.update({"bins": [0] * (int(duration // DENSITY_BIN_S) + 1), "covered": [[0.0, duration]], "source": "none"})
+        write()
+    progress(1.0, "Chat activity loaded")

@@ -140,6 +140,7 @@ def init() -> None:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
     c.execute("UPDATE videos SET status='skipped' WHERE status!='skipped' AND stage LIKE 'Outside campaign window%'")
     ensure_workspace()
+    _migrate_settings()
 
 
 def ensure_workspace() -> dict:
@@ -248,3 +249,15 @@ def all_settings() -> dict:
     for r in conn().execute("SELECT key, value FROM settings"):
         out[r["key"]] = json.loads(r["value"])
     return out
+
+
+def _migrate_settings() -> None:
+    """Defaults that changed after people may have saved settings: sources are checked every 10 min (was 30) and
+    nothing auto-renders (was top 1). Applied once per database."""
+    if get_setting("settings_v2", False):
+        return
+    if get_setting("watch_interval_min", None) == 30:
+        set_setting("watch_interval_min", 10)
+    if get_setting("auto_render_top", None) == 1:
+        set_setting("auto_render_top", 0)
+    set_setting("settings_v2", True)

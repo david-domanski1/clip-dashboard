@@ -34,7 +34,7 @@ const toastErr = (e) => toast(e.message || String(e), 'err');
 // Plain-language status words. Machine states stay in the API; people see these.
 const LABELS = {
   clip: { rendering: 'Making clip…', pending: 'Ready to review', approved: 'Approved', rejected: 'Rejected', posted: 'Posted', error: 'Failed' },
-  video: { queued: 'Waiting to scan', scanning: 'Finding moments…', scanned: 'Moments found', rendering: 'Making clip…', done: 'Done', error: 'Failed', skipped: 'Outside campaign window' },
+  video: { new: 'New — pick a section', queued: 'Waiting to search', scanning: 'Finding moments…', scanned: 'Moments found', rendering: 'Making clip…', done: 'Done', error: 'Failed', skipped: 'Outside campaign window' },
   post: { publishing: 'Posting…', scheduled: 'Scheduled', pending: 'Processing on the platform', live: 'Posted', manual: 'Needs your upload', private: 'Posted as private', draft: 'Draft in your TikTok inbox', failed: 'Failed', cancelled: 'Cancelled' },
   job: { queued: 'Waiting', running: 'Working…', done: 'Done', error: 'Failed', cancelled: 'Cancelled' },
   account: { ready: 'Ready', connected: 'Connected', connecting: 'Connecting…', error: 'Failed', disconnected: 'Not connected' },
@@ -99,6 +99,7 @@ async function refreshState() {
   try {
     S.state = await get('/api/state');
     const st = S.state;
+    if (st.watch_interval_min) S.watchMin = st.watch_interval_min;
     $('#brand-sub').textContent = 'v' + st.version;
     const c = campaign();
     try { S.today = await get(`/api/today${c ? '?campaign_id=' + c.id : ''}`); } catch (e) { S.today = null; }
@@ -183,6 +184,11 @@ VIEWS.home = async (el) => {
       ${step(t.workspace ? 3 : 4, 'Streams being watched', t.sources.length,
         t.sources.length ? t.sources.map((s) => `<span class="chip">${s.live ? '<b class="live-dot">LIVE</b> ' : ''}${esc(s.name)}</span>`).join(' ') : 'No channel is watched yet. Add one under Sources.',
         'Sources', '#/sources')}
+      ${t.new_videos.length ? `<div class="step">
+        <div class="step-n">▶</div>
+        <div class="step-body"><div class="step-title">New videos found <b class="count">${t.new_videos.length}</b></div>
+          <div class="step-sub">${t.new_videos.map((n) => `<div class="attn"><span>New video found: <b>${esc(n.title)}</b>${n.live ? ' <b class="live-dot">LIVE</b>' : ''}<span class="muted"> · ${esc(n.source || n.platform)}${n.duration ? ' · ' + fmtTime(n.duration) : ''}</span></span><button class="btn sm primary" data-pick="${n.id}">Pick a section</button></div>`).join('')}</div></div>
+      </div>` : ''}
       <div class="step ${t.attention.length ? 'warn' : 'done'}">
         <div class="step-n">!</div>
         <div class="step-body"><div class="step-title">Needs attention <b class="count">${t.attention.length}</b></div>
@@ -190,6 +196,7 @@ VIEWS.home = async (el) => {
       </div>
     </div>`;
   $$('[data-retry]', el).forEach((b) => b.onclick = async () => { b.disabled = true; try { await post(b.dataset.retry, b.dataset.kind === 'video' ? { override: true } : {}); toast('Retrying'); render(); } catch (e) { toastErr(e); b.disabled = false; } });
+  $$('[data-pick]', el).forEach((b) => b.onclick = () => openSectionPicker(Number(b.dataset.pick)));
   const cd = $('.countdown[data-dl]', el);
   if (cd) { const tick = () => { const left = (new Date(cd.dataset.dl) - Date.now()) / 1000; if (left <= 0) { cd.textContent = 'Missed'; cd.classList.add('late'); return; } cd.textContent = fmtTime(left); cd.classList.toggle('late', left < 600); }; tick(); clearInterval(S.tick); S.tick = setInterval(tick, 1000); }
 };
@@ -284,7 +291,8 @@ function openCampaignEditor(c = null) {
 VIEWS.sources = async (el, arg) => {
   const c = campaign();
   if (!c) { el.innerHTML = noCampaign(); return; }
-  if (arg) S.openSources[Number(arg)] = true;
+  const pickId = arg && arg.startsWith('pick/') ? Number(arg.slice(5)) : null;   // #/sources/pick/<video id> opens the section picker
+  if (arg && !pickId) S.openSources[Number(arg)] = true;
   const [srcs, sugg, vids, skipped] = await Promise.all([get(`/api/campaigns/${c.id}/sources`), get('/api/suggestions'), get(`/api/videos?campaign_id=${c.id}`), get(`/api/videos/skipped?campaign_id=${c.id}`)]);
   const bySource = (id) => vids.filter((v) => v.source_id === id);
   const loose = vids.filter((v) => !v.source_id || !srcs.some((s) => s.id === v.source_id));
@@ -293,28 +301,27 @@ VIEWS.sources = async (el, arg) => {
     ${c.workspace ? `<div class="callout teal"><b>Streamer clips (no campaign).</b> Only creators who publicly allow clipping (a !clipping program, clip-friendly terms). Clips here follow no campaign rules and have no submission tracker; captions credit the streamer by name and handle. A creator who has an active campaign in this app must be clipped inside that campaign.</div>` : ''}
     <div class="panel">
       <div class="field"><label>Add a YouTube channel (youtube.com/@name), Twitch channel (twitch.tv/name), or a single video URL (a stream still in progress works too)</label>
-        <div class="row"><input type="text" id="src-url" placeholder="https://www.twitch.tv/lacy  ·  https://www.youtube.com/@IShowSpeed  ·  https://www.twitch.tv/videos/…" style="flex:1;min-width:260px"><span class="row" id="src-win"><span class="small muted">Scan window:</span>${windowControls('new')}</span><button class="btn primary" id="src-add" ${c.workspace ? 'disabled' : ''}>Add</button></div></div>
+        <div class="row"><input type="text" id="src-url" placeholder="https://www.twitch.tv/lacy  ·  https://www.youtube.com/@IShowSpeed  ·  https://www.twitch.tv/videos/…" style="flex:1;min-width:260px"><button class="btn primary" id="src-add" ${c.workspace ? 'disabled' : ''}>Add</button></div></div>
       ${c.workspace ? `<label class="check"><input type="checkbox" id="src-consent"> This creator publicly allows clipping (e.g. a !clipping program or clip-friendly terms)</label>
         <div class="row" style="margin-top:6px"><input type="text" id="src-terms" placeholder="Link to their clipping terms / program page (optional)" style="flex:1"></div>` : ''}
       <div class="row small muted" style="margin-top:8px">Suggestions:
         ${sugg.map((s) => `${s.youtube ? `<span class="chip" data-url="https://www.youtube.com/${s.youtube}">▶ ${esc(s.name)} (YouTube)</span>` : ''}${s.twitch ? `<span class="chip" data-url="https://www.twitch.tv/${s.twitch}">⌁ ${esc(s.name)} (Twitch)</span>` : ''}`).join('')}</div>
-      <div class="small muted" style="margin-top:8px">Long VODs default to their last 2 hours (clips in about 2 minutes); "Scan the rest" continues in 2-hour chunks. Videos published before the campaign's footage start (${esc((c.source_start || 'not set').slice(0, 10))}) are skipped unless you override.</div>
+      <div class="small muted" style="margin-top:8px">Channels are checked every ${esc(String(S.watchMin || 10))} minutes, live streams included; new videos appear on Today. A video is searched only after you pick a section of it. Videos published before the campaign's footage start (${esc((c.source_start || 'not set').slice(0, 10))}) are skipped unless you override.</div>
     </div>
     <div id="src-list" style="margin-top:14px">${srcs.length || loose.length ? '' : '<div class="empty">No sources yet. Paste a channel or video URL above, or pick a suggestion.</div>'}</div>
     ${skipped.length ? `<div style="margin-top:10px"><button class="btn sm ghost" id="v-toggle-skipped">${S.showSkipped ? 'Hide' : 'Show'} skipped (${skipped.length})</button>
       <div class="panel ${S.showSkipped ? '' : 'hidden'}" id="v-skipped" style="margin-top:8px"><div class="small muted" style="margin-bottom:6px">Published outside the campaign's footage window, so not scanned. "Scan anyway" overrides for that video.</div></div></div>` : ''}`;
-  wireWindow(el, 'new');
   const tog = $('#v-toggle-skipped'); if (tog) tog.onclick = () => { S.showSkipped = !S.showSkipped; render(); };
   const consent = () => !c.workspace || ($('#src-consent') && $('#src-consent').checked);
   if (c.workspace) $('#src-consent').onchange = () => { $('#src-add').disabled = !consent(); };
   const add = async (url) => {
     if (!url) return;
     if (!consent()) return toast('Tick the clipping-allowed box first', 'warn');
-    const w = readWindow(el, 'new'); if (w === null) return;
     const btn = $('#src-add'); btn.disabled = true; btn.textContent = 'Resolving…';
     try {
-      const r = await post('/api/sources', { campaign_id: c.id, url, clip_terms_ok: consent(), terms_url: c.workspace ? $('#src-terms').value.trim() : undefined, window: w });
-      toast(r.video ? 'Video queued for scanning' : `Added ${r.source.name}`); $('#src-url').value = ''; render();
+      const r = await post('/api/sources', { campaign_id: c.id, url, clip_terms_ok: consent(), terms_url: c.workspace ? $('#src-terms').value.trim() : undefined });
+      toast(r.video ? 'Video added; pick the section to search' : `Added ${r.source.name}`); $('#src-url').value = ''; await render();
+      if (r.video) openSectionPicker(r.video.id);
     } catch (e) { if (e.status === 409 && e.data && e.data.campaign_id) { toast(e.data.message, 'warn'); } else toastErr(e); }
     finally { btn.disabled = !consent(); btn.textContent = 'Add'; }
   };
@@ -370,6 +377,7 @@ VIEWS.sources = async (el, arg) => {
     list.appendChild(d);
   }
   if (S.showSkipped && $('#v-skipped')) for (const v of skipped) renderVideo(v, $('#v-skipped'), c, 99);
+  if (pickId && !$('#modal-root').innerHTML) openSectionPicker(pickId);
 };
 
 function openFacecamPicker(s) {
@@ -419,20 +427,7 @@ function facecamPicker(s, root, onDone) {
 }
 
 // ---------------------------------------------------------------- Pipeline (videos)
-const WINDOWS = [['auto', 'Auto (last 2 h for VODs over 4 h)'], ['last2h', 'Last 2 hours'], ['last6h', 'Last 6 hours'], ['whole', 'Whole video'], ['custom', 'Custom start / end']];
 const parseHms = (s) => { const p = String(s || '').trim().split(':').map(Number); if (!p.length || p.some(isNaN)) return null; return p.reduce((a, b) => a * 60 + b, 0); };
-function windowControls(id, sel = 'auto') {
-  return `<select data-win="${id}" style="width:auto">${WINDOWS.map(([k, l]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${l}</option>`).join('')}</select>
-    <span class="row hidden" data-custom="${id}"><input type="text" placeholder="start hh:mm:ss" style="width:120px" data-ws="${id}"><input type="text" placeholder="end hh:mm:ss" style="width:120px" data-we="${id}"></span>`;
-}
-function readWindow(root, id) {
-  const sel = $(`[data-win="${id}"]`, root).value;
-  if (sel !== 'custom') return sel;
-  const start = parseHms($(`[data-ws="${id}"]`, root).value) || 0, end = parseHms($(`[data-we="${id}"]`, root).value);
-  if (end == null) { toast('Enter the window end as hh:mm:ss', 'warn'); return null; }
-  return { start, end };
-}
-function wireWindow(root, id) { $(`[data-win="${id}"]`, root).onchange = (e) => $(`[data-custom="${id}"]`, root).classList.toggle('hidden', e.target.value !== 'custom'); }
 
 // ---------------------------------------------------------------- one video row with its ranked moments (used inside Sources)
 function renderVideo(v, container, c, siblings) {
@@ -446,58 +441,151 @@ function renderVideo(v, container, c, siblings) {
       <div class="small muted"><a href="${esc(v.url)}" target="_blank">${esc(v.url)}</a> · ${v.channel ? esc(v.channel) + ' · ' : ''}${v.duration ? fmtTime(v.duration) : ''} ${v.published_at ? '· published ' + fmtDate(v.published_at) : ''}</div>
       <div class="small" style="margin-top:6px">${v.status === 'error' ? `<span class="bad-text">${esc(errText(v))}</span>` : esc(v.stage || '')}</div>
       ${busy ? `<div class="progress" style="margin-top:6px;max-width:420px"><i style="width:${Math.round((v.progress || 0) * 100)}%"></i></div>` : ''}
-      <div class="small muted" style="margin-top:6px">${ranges ? 'scanned ' + ranges + ' · ' : ''}${v.moment_count} moments${v.signals.signals_used ? ' from ' + v.signals.signals_used.join(' + ') : ''}${v.signals.chat_messages ? ` · ${fmtNum(v.signals.chat_messages)} chat messages` : ''}${v.signals.chat_error ? ` · <span class="warn-text">chat: ${esc(v.signals.chat_error.slice(0, 120))}</span>` : ''} · clips: ${Object.entries(cc).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'}</div>
-      <div class="row" style="margin-top:8px" data-rescan-row><span class="small muted">Scan window:</span>${windowControls('v' + v.id, v.duration > 4 * 3600 ? 'last2h' : 'auto')}<button class="btn sm" data-rescan ${busy ? 'disabled' : ''}>${v.status === 'skipped' ? 'Scan anyway (override date window)' : (v.scanned_ranges?.length ? 'Scan this window' : 'Scan')}</button>
-        ${v.unscanned?.length && !busy ? `<button class="btn sm yellow" data-rest>Scan the rest (${v.unscanned.length} × 2 h, background)</button>` : ''}</div>
+      <div class="small muted" style="margin-top:6px">${ranges ? 'searched ' + ranges + ' · ' : ''}${v.moment_count} moments${v.signals.signals_used ? ' from ' + v.signals.signals_used.join(' + ') : ''}${v.signals.chat_messages ? ` · ${fmtNum(v.signals.chat_messages)} chat messages` : ''}${v.signals.chat_error ? ` · <span class="warn-text">chat: ${esc(v.signals.chat_error.slice(0, 120))}</span>` : ''} · clips: ${Object.entries(cc).map(([k, n]) => `${n} ${label('clip', k).toLowerCase()}`).join(', ') || 'none'}</div>
       <div data-moments></div>
     </div>
     <div class="row" style="align-items:flex-start">
+      <button class="btn sm ${v.status === 'new' ? 'primary' : ''}" data-pick ${busy ? 'disabled' : ''}>${v.status === 'skipped' ? 'Pick a section (overrides date window)' : 'Pick a section'}</button>
       ${v.moment_count ? `<button class="btn sm" data-show>Show / hide moments</button>` : ''}
       ${cc.pending ? `<a class="btn sm primary" href="#/review/${v.id}">Review ${cc.pending}</a>` : ''}
       ${v.status === 'error' ? `<button class="btn sm yellow" data-retry-scan>Retry</button>` : ''}
       <button class="btn sm danger" data-del>Delete</button>
     </div>`;
-  wireWindow(d, 'v' + v.id);
-  $('[data-rescan]', d).onclick = () => { const w = readWindow(d, 'v' + v.id); if (w === null) return; post(`/api/videos/${v.id}/rescan`, { window: w, override: v.status === 'skipped' }).then(render).catch(toastErr); };
-  const rs = $('[data-retry-scan]', d); if (rs) rs.onclick = () => post(`/api/videos/${v.id}/rescan`, { window: readWindow(d, 'v' + v.id) || 'auto' }).then(render).catch(toastErr);
-  const rest = $('[data-rest]', d); if (rest) rest.onclick = () => post(`/api/videos/${v.id}/scan_rest`).then((r) => { toast(`${r.queued_chunks} chunks queued`); render(); }).catch(toastErr);
+  $('[data-pick]', d).onclick = () => openSectionPicker(v.id);
+  const rs = $('[data-retry-scan]', d); if (rs) rs.onclick = () => post(`/api/videos/${v.id}/rescan`, { window: v.scan_window || 'auto' }).then(render).catch(toastErr);
   $('[data-del]', d).onclick = async () => { if (await confirmDlg('Delete this video and all its clips?', 'Delete')) { await del(`/api/videos/${v.id}`); render(); } };
   const momentsBox = $('[data-moments]', d);
-  const loadMoments = async () => {
-    const ms = await get(`/api/videos/${v.id}/moments`);
-    if (!ms.length) { momentsBox.innerHTML = ''; return; }
-    const unrendered = ms.filter((m) => !m.clip).length;
-    const skippedMs = ms.filter((m) => m.flags?.length), shown = ms.filter((m) => !m.flags?.length);
-    S.showSkippedMoments = S.showSkippedMoments || {};
-    const openSk = !!S.showSkippedMoments[v.id];
-    const chipFor = (m) => m.clip
-      ? (m.clip.status === 'rendering'
-        ? `<span class="badge rendering">${esc(m.render_job?.message || 'Making clip…')}</span><button class="btn sm danger" data-cancel="${m.clip.id}">Cancel</button>`
-        : `${badge('clip', m.clip.status, m.clip)}${['pending', 'approved'].includes(m.clip.status) ? `<a class="btn sm" href="#/review/${v.id}">Review</a>` : ''}${m.clip.status === 'error' ? `<button class="btn sm yellow" data-retry-clip="${m.clip.id}">Retry</button>` : ''}`)
-      : `<button class="btn sm" data-render="${m.id}">Render</button>`;
-    const rowFor = (m) => `<div class="moment ${m.flags?.length ? 'flagged' : ''}" title="${esc((m.reasons || []).join(' · '))}${m.raw_score != null ? ' · score ' + m.score + (m.raw_score !== m.score ? ' (raw ' + m.raw_score + ')' : '') : ''}">
-          ${m.thumb_url ? `<div class="mthumb" style="background-image:url('${m.thumb_url}')"></div>` : `<div class="mthumb none">${m.ts}</div>`}
-          <span class="t">${m.ts}</span>
-          <div class="grow"><div><b>${m.flags?.length ? esc(flagLabel(m.flags[0])) : esc(momentStrength(m))}</b></div>
-            ${m.chat_words.length ? `<div class="reason">chat was saying: ${m.chat_words.map(esc).join(', ')}</div>` : (m.flags?.length ? '' : `<div class="reason">${esc((m.reasons || [])[0] || '')}</div>`)}</div>
-          ${chipFor(m)}
-          <a class="small" href="${esc(v.url)}${v.platform === 'youtube' ? '&t=' + Math.round(m.t) : '?t=' + Math.round(m.t) + 's'}" target="_blank">open ↗</a></div>`;
-    momentsBox.innerHTML = `<div style="margin-top:10px"><div class="row between"><b class="small">Ranked moments</b>
-        ${unrendered ? `<button class="btn sm primary" data-next>Render next best</button>` : ''}</div>
+  const showBtn = $('[data-show]', d);
+  if (showBtn) showBtn.onclick = () => { if (momentsBox.innerHTML) momentsBox.innerHTML = ''; else renderMoments(v, momentsBox); };
+  if (v.moment_count && (S.openMoments === v.id || siblings <= 3)) renderMoments(v, momentsBox);
+  container.appendChild(d);
+}
+
+// Ranked moments of one video: score next to the plain label, a bar for relative strength, "why" on hover.
+// Nothing renders until Render is clicked. opts.clipLen / opts.leadIn come from the section picker.
+async function renderMoments(v, box, opts = {}) {
+  const ms = await get(`/api/videos/${v.id}/moments`);
+  if (!ms.length) { box.innerHTML = opts.empty ? `<div class="muted small" style="padding:8px 0">${esc(opts.empty)}</div>` : ''; return; }
+  const byScore = (a, b) => b.score - a.score || a.t - b.t;
+  const skippedMs = ms.filter((m) => m.flags?.length).sort(byScore), shown = ms.filter((m) => !m.flags?.length).sort(byScore);
+  const maxScore = Math.max(0.01, ...ms.map((m) => Number(m.raw_score ?? m.score) || 0));
+  S.showSkippedMoments = S.showSkippedMoments || {};
+  const openSk = !!S.showSkippedMoments[v.id];
+  const renderBody = () => opts.clipLen ? { clip_len: opts.clipLen(), lead_in: opts.leadIn() } : {};
+  const chipFor = (m) => m.clip
+    ? (m.clip.status === 'rendering'
+      ? `<span class="badge rendering">${esc(m.render_job?.message || 'Making clip…')}</span><button class="btn sm danger" data-cancel="${m.clip.id}">Cancel</button>`
+      : `${badge('clip', m.clip.status, m.clip)}${['pending', 'approved'].includes(m.clip.status) ? `<a class="btn sm" href="#/review/${v.id}">Review</a>` : ''}${m.clip.status === 'error' ? `<button class="btn sm yellow" data-retry-clip="${m.clip.id}">Retry</button>` : ''}`)
+    : `<button class="btn sm primary" data-render="${m.id}">Render</button>`;
+  const rowFor = (m) => {
+    const sc = Number(m.score) || 0;
+    const why = (m.reasons || []).join(' · ') + (m.raw_score != null && m.raw_score !== m.score ? ` · raw score ${m.raw_score}` : '');
+    return `<div class="moment ${m.flags?.length ? 'flagged' : ''}" title="${esc(why)}">
+        ${m.thumb_url ? `<div class="mthumb" style="background-image:url('${m.thumb_url}')"></div>` : `<div class="mthumb none">${m.ts}</div>`}
+        <span class="t">${m.ts}</span>
+        <div class="grow"><div class="row" style="gap:8px"><b>${m.flags?.length ? esc(flagLabel(m.flags[0])) : esc(momentStrength(m))}</b><span class="score">${sc.toFixed(1)}</span><span class="sbar" title="${esc(why)}"><i style="width:${Math.round(sc / maxScore * 100)}%"></i></span></div>
+          ${m.chat_words.length ? `<div class="reason">chat was saying: ${m.chat_words.map(esc).join(', ')}</div>` : `<div class="reason">${esc((m.reasons || [])[0] || '')}</div>`}</div>
+        ${chipFor(m)}
+        <a class="small" href="${esc(v.url)}${v.platform === 'youtube' ? '&t=' + Math.round(m.t) : '?t=' + Math.round(m.t) + 's'}" target="_blank">open ↗</a></div>`;
+  };
+  box.innerHTML = `<div style="margin-top:10px"><div class="row between"><b class="small">Ranked moments <span class="muted">(score, highest first; hover for why)</span></b></div>
       ${shown.map(rowFor).join('')}
       ${skippedMs.length ? `<a class="small" href="#" data-toggle-sk style="display:block;margin-top:6px">${openSk ? 'hide' : 'show'} skipped (${skippedMs.length})</a>${openSk ? skippedMs.map(rowFor).join('') : ''}` : ''}
       <div class="row" style="margin-top:8px"><span class="small muted">Render at a time of your own:</span><input type="text" placeholder="hh:mm:ss" style="width:110px" data-custom-t><button class="btn sm" data-custom>Render</button></div></div>`;
-    $$('[data-render]', momentsBox).forEach((b) => b.onclick = () => post(`/api/moments/${b.dataset.render}/render`).then(() => { toast('Making the clip'); loadMoments(); }).catch(toastErr));
-    $$('[data-retry-clip]', momentsBox).forEach((b) => b.onclick = () => post(`/api/clips/${b.dataset.retryClip}/rerender`).then(() => { toast('Retrying'); loadMoments(); }).catch(toastErr));
-    const tsk = $('[data-toggle-sk]', momentsBox); if (tsk) tsk.onclick = (e) => { e.preventDefault(); S.showSkippedMoments[v.id] = !openSk; loadMoments(); };
-    $$('[data-cancel]', momentsBox).forEach((b) => b.onclick = () => post(`/api/clips/${b.dataset.cancel}/cancel`).then(() => { toast('Cancelled'); setTimeout(loadMoments, 800); }).catch(toastErr));
-    const nx = $('[data-next]', momentsBox); if (nx) nx.onclick = () => post(`/api/videos/${v.id}/render_next`).then(() => { toast('Rendering next best'); loadMoments(); }).catch(toastErr);
-    $('[data-custom]', momentsBox).onclick = () => { const t = parseHms($('[data-custom-t]', momentsBox).value); if (t == null) return toast('Enter hh:mm:ss', 'warn'); post(`/api/videos/${v.id}/render_custom`, { t }).then(() => { toast('Rendering'); loadMoments(); }).catch(toastErr); };
+  const reload = () => renderMoments(v, box, opts);
+  $$('[data-render]', box).forEach((b) => b.onclick = () => post(`/api/moments/${b.dataset.render}/render`, renderBody()).then(() => { toast('Making the clip'); reload(); }).catch(toastErr));
+  $$('[data-retry-clip]', box).forEach((b) => b.onclick = () => post(`/api/clips/${b.dataset.retryClip}/rerender`).then(() => { toast('Retrying'); reload(); }).catch(toastErr));
+  $$('[data-cancel]', box).forEach((b) => b.onclick = () => post(`/api/clips/${b.dataset.cancel}/cancel`).then(() => { toast('Cancelled'); setTimeout(reload, 800); }).catch(toastErr));
+  const tsk = $('[data-toggle-sk]', box); if (tsk) tsk.onclick = (e) => { e.preventDefault(); S.showSkippedMoments[v.id] = !openSk; reload(); };
+  $('[data-custom]', box).onclick = () => { const t = parseHms($('[data-custom-t]', box).value); if (t == null) return toast('Enter hh:mm:ss', 'warn'); post(`/api/videos/${v.id}/render_custom`, { t, ...renderBody() }).then(() => { toast('Making the clip'); reload(); }).catch(toastErr); };
+}
+
+// ---------------------------------------------------------------- Pick a section
+// One panel per video: a timeline of the whole VOD with a chat-activity heat strip, drag handles or typed
+// start/end for the section to search, presets, a clip-length picker and lead-in, then "Find moments".
+const CLIP_LENS = [61, 90, 120];
+async function openSectionPicker(videoId) {
+  let sec;
+  const m = modal(`<div class="modal-head"><h2 style="margin:0">Pick a section</h2><button class="btn ghost" onclick="closeModal()">✕</button></div><div class="muted" id="sp-wait">Reading the video…</div>`);
+  try { sec = await get(`/api/videos/${videoId}/section?refresh=1`); } catch (e) { $('#sp-wait', m).innerHTML = `<span class="bad-text">${esc(e.message)}</span>`; return; }
+  const dur = sec.duration || 0;
+  if (!dur) { $('#sp-wait', m).innerHTML = `<span class="bad-text">This video has no length yet (a stream that just started, or an unavailable video). Try again in a few minutes.</span>`; return; }
+  let a = sec.last_section && sec.last_section[0] != null ? Number(sec.last_section[0]) : Math.max(0, dur - 7200), b = sec.last_section && sec.last_section[1] != null ? Math.min(dur, Number(sec.last_section[1])) : dur;
+  if (b - a < 60) { a = Math.max(0, dur - 7200); b = dur; }
+  let clipLen = Number(sec.clip_len) || 90, leadIn = Number(sec.lead_in) ?? 25;
+  const custom = !CLIP_LENS.includes(clipLen);
+  m.innerHTML = `<div class="modal-head"><div><h2 style="margin:0">Pick a section · ${esc(sec.title || '')}</h2><span class="small muted">${fmtTime(dur)} long${sec.live ? ' · <b class="live-dot">LIVE</b> still growing' : ''} · searching reads only this section's chat and audio, so a 2-hour section takes about half a minute.</span></div><button class="btn ghost" onclick="closeModal()">✕</button></div>
+    <div class="panel">
+      <div class="row between"><div class="chips" id="sp-presets">${[['last30m', 'Last 30 min'], ['last1h', 'Last 1 h'], ['last2h', 'Last 2 h'], ['whole', 'Whole VOD']].map(([k, l]) => `<span class="chip" data-preset="${k}">${l}</span>`).join('')}</div>
+        <span class="small muted" id="sp-heat-status"></span></div>
+      <div class="tl" id="tl"><canvas id="tl-heat"></canvas><div id="tl-overlays"></div><div class="tl-sel" id="tl-sel"></div><div class="tl-handle" id="tl-a" title="drag: section start"></div><div class="tl-handle" id="tl-b" title="drag: section end"></div></div>
+      <div class="row between small muted"><span>0:00</span><span>chat activity: brighter = busier · grey = not loaded yet · ticks = moments already found</span><span>${fmtTime(dur)}</span></div>
+      <div class="row" style="margin-top:10px"><label class="small muted">From</label><input type="text" id="sp-a" style="width:110px"><label class="small muted">to</label><input type="text" id="sp-b" style="width:110px"><span class="small" id="sp-len"></span></div>
+    </div>
+    <div class="panel" style="margin-top:12px"><div class="row" style="gap:18px;align-items:flex-end">
+      <div class="field" style="margin:0"><label>Clip length</label><div class="chips" id="sp-lens">${CLIP_LENS.map((n) => `<span class="chip ${!custom && clipLen === n ? 'on' : ''}" data-len="${n}">${n} s</span>`).join('')}<span class="chip ${custom ? 'on' : ''}" data-len="custom">custom</span><input type="number" id="sp-custom" min="10" max="600" value="${clipLen}" style="width:80px" class="${custom ? '' : 'hidden'}"> </div></div>
+      <div class="field" style="margin:0"><label>Starts this many seconds before the moment</label><input type="number" id="sp-lead" min="0" max="300" value="${leadIn}" style="width:90px"></div>
+      <span class="grow"></span>
+      <button class="btn primary" id="sp-find">Find moments</button></div>
+      <div class="small muted" style="margin-top:6px">Each clip is cut from <span id="sp-lead-txt"></span>; nothing renders until you click Render on a moment.</div>
+      <div id="sp-progress" class="hidden" style="margin-top:10px"><div class="small" id="sp-stage"></div><div class="progress" style="margin-top:4px"><i id="sp-bar" style="width:0%"></i></div></div></div>
+    <div id="sp-moments"></div>`;
+  const tl = $('#tl', m), heat = $('#tl-heat', m), sel = $('#tl-sel', m), ha = $('#tl-a', m), hb = $('#tl-b', m), ia = $('#sp-a', m), ib = $('#sp-b', m);
+  const pct = (t) => (t / dur * 100);
+  const clamp = () => { a = Math.min(Math.max(0, a), dur); b = Math.min(Math.max(0, b), dur); if (b < a) [a, b] = [b, a]; if (b - a < 60) { if (a > dur - 60) a = Math.max(0, dur - 60); b = Math.min(dur, a + 60); } };
+  const drawSel = () => { clamp(); sel.style.left = pct(a) + '%'; sel.style.width = pct(b - a) + '%'; ha.style.left = pct(a) + '%'; hb.style.left = pct(b) + '%'; ia.value = fmtTime(a); ib.value = fmtTime(b); $('#sp-len', m).textContent = `${fmtTime(b - a)} selected`; $$('#sp-presets .chip', m).forEach((ch) => ch.classList.remove('on')); };
+  const leadTxt = () => { const li = Number($('#sp-lead', m).value) || 0; $('#sp-lead-txt', m).textContent = `${li} s before the moment to ${Math.max(0, clipLen - li)} s after it (${clipLen} s)`; };
+  const drawHeat = (dens) => {
+    const W = heat.width = tl.clientWidth || 800, H = heat.height = 40; const ctx = heat.getContext('2d');
+    ctx.fillStyle = '#26262f'; ctx.fillRect(0, 0, W, H);
+    const bins = dens.bins || [], bs = dens.bin_s || 60;
+    (dens.covered || []).forEach(([s0, e0]) => { ctx.fillStyle = '#121217'; ctx.fillRect(s0 / dur * W, 0, Math.max(1, (e0 - s0) / dur * W), H); });
+    if (bins.length) {
+      const sorted = bins.filter((x) => x > 0).slice().sort((x, y) => x - y), ref = sorted[Math.floor(sorted.length * 0.95)] || 1;
+      bins.forEach((n, i) => { if (!n) return; const x = i * bs / dur * W, w = Math.max(1, bs / dur * W), v = Math.min(1, n / ref); ctx.fillStyle = `rgba(31,209,214,${0.15 + 0.85 * v})`; ctx.fillRect(x, H - Math.max(2, v * H), w, Math.max(2, v * H)); });
+    }
+    const ov = $('#tl-overlays', m);
+    ov.innerHTML = (sec.scanned_ranges || []).map(([s0, e0]) => `<div class="tl-scanned" style="left:${pct(s0)}%;width:${pct(e0 - s0)}%" title="already searched ${fmtTime(s0)}–${fmtTime(e0)}"></div>`).join('')
+      + (sec.moments || []).map((mm) => `<div class="tl-moment ${mm.flags?.length ? 'flagged' : ''}" style="left:${pct(mm.t)}%" title="${fmtTime(mm.t)} · score ${mm.score}"></div>`).join('');
+    const st = $('#sp-heat-status', m);
+    st.innerHTML = dens.loading ? `<span class="warn-text">⟳ ${esc(dens.loading_message || 'Loading chat activity…')}</span>` : (dens.complete ? (dens.source === 'heatmap' ? "YouTube 'most replayed'" : (dens.source === 'none' ? 'no chat replay for this video' : 'chat activity loaded')) : `<a href="#" id="sp-load">Load chat activity</a>`);
+    const ld = $('#sp-load', m); if (ld) ld.onclick = (e) => { e.preventDefault(); startDensity(); };
   };
-  const showBtn = $('[data-show]', d);
-  if (showBtn) showBtn.onclick = () => { if (momentsBox.innerHTML) momentsBox.innerHTML = ''; else loadMoments(); };
-  if (v.moment_count && (S.openMoments === v.id || siblings <= 3)) loadMoments();
-  container.appendChild(d);
+  const startDensity = async () => { try { await post(`/api/videos/${videoId}/density`); pollDensity(); } catch (e) { toastErr(e); } };
+  const pollDensity = () => { clearInterval(S.densPoll); S.densPoll = setInterval(async () => { if (!document.body.contains(m)) return clearInterval(S.densPoll); try { const fresh = await get(`/api/videos/${videoId}/section`); sec.density = fresh.density; sec.moments = fresh.moments; sec.scanned_ranges = fresh.scanned_ranges; drawHeat(fresh.density); if (!fresh.density.loading) clearInterval(S.densPoll); } catch (e) { clearInterval(S.densPoll); } }, 3000); };
+  drawSel(); drawHeat(sec.density); leadTxt();
+  if (!sec.density.complete && !sec.density.loading) startDensity(); else if (sec.density.loading) pollDensity();
+  window.addEventListener('resize', () => { if (document.body.contains(m)) drawHeat(sec.density); }, { once: true });
+  // drag handles (mouse and touch), click on the bar moves the nearest handle
+  const frac = (e) => { const r = tl.getBoundingClientRect(); const x = (e.touches ? e.touches[0] : e).clientX; return Math.min(1, Math.max(0, (x - r.left) / r.width)) * dur; };
+  let drag = null;
+  const down = (which) => (e) => { drag = which; e.preventDefault(); };
+  const move = (e) => { if (!drag) return; const t = frac(e); if (drag === 'a') a = Math.min(t, b - 60); else b = Math.max(t, a + 60); drawSel(); e.preventDefault(); };
+  const up = () => { drag = null; };
+  ha.onpointerdown = down('a'); hb.onpointerdown = down('b');
+  window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  tl.onclick = (e) => { if (e.target === ha || e.target === hb) return; const t = frac(e); if (Math.abs(t - a) < Math.abs(t - b)) a = Math.min(t, b - 60); else b = Math.max(t, a + 60); drawSel(); };
+  ia.onchange = () => { const t = parseHms(ia.value); if (t != null) { a = t; drawSel(); } else ia.value = fmtTime(a); };
+  ib.onchange = () => { const t = parseHms(ib.value); if (t != null) { b = t; drawSel(); } else ib.value = fmtTime(b); };
+  $$('#sp-presets .chip', m).forEach((ch) => ch.onclick = () => { const k = ch.dataset.preset; const len = { last30m: 1800, last1h: 3600, last2h: 7200 }[k]; a = len ? Math.max(0, dur - len) : 0; b = dur; drawSel(); ch.classList.add('on'); });
+  $$('#sp-lens .chip', m).forEach((ch) => ch.onclick = () => { $$('#sp-lens .chip', m).forEach((x) => x.classList.toggle('on', x === ch)); const ci = $('#sp-custom', m); if (ch.dataset.len === 'custom') { ci.classList.remove('hidden'); clipLen = Number(ci.value) || 90; } else { ci.classList.add('hidden'); clipLen = Number(ch.dataset.len); } leadTxt(); });
+  $('#sp-custom', m).oninput = (e) => { clipLen = Math.max(10, Number(e.target.value) || 10); leadTxt(); };
+  $('#sp-lead', m).oninput = leadTxt;
+  const getClipLen = () => clipLen, getLeadIn = () => Number($('#sp-lead', m).value) || 0;
+  const v = { id: videoId, url: sec.url, platform: sec.platform };
+  const momentsBox = $('#sp-moments', m);
+  const showMoments = () => renderMoments(v, momentsBox, { clipLen: getClipLen, leadIn: getLeadIn, empty: 'No moments found in that section. Try a wider section or a different one.' });
+  if (sec.moments.length) showMoments();
+  const pollScan = () => { clearInterval(S.scanPoll); S.scanPoll = setInterval(async () => { if (!document.body.contains(m)) return clearInterval(S.scanPoll); try { const fresh = await get(`/api/videos/${videoId}/section`); $('#sp-stage', m).textContent = fresh.stage || ''; $('#sp-bar', m).style.width = Math.round((fresh.progress || 0) * 100) + '%'; if (!['queued', 'scanning'].includes(fresh.status)) { clearInterval(S.scanPoll); $('#sp-progress', m).classList.add('hidden'); $('#sp-find', m).disabled = false; sec.moments = fresh.moments; sec.scanned_ranges = fresh.scanned_ranges; drawHeat(sec.density); if (fresh.status === 'error') toast(fresh.stage || 'The search failed', 'err'); showMoments(); refreshState(); } } catch (e) { clearInterval(S.scanPoll); } }, 2000); };
+  $('#sp-find', m).onclick = async () => {
+    const btn = $('#sp-find', m); btn.disabled = true;
+    try {
+      await post(`/api/videos/${videoId}/rescan`, { window: { start: a, end: b }, clip_len: getClipLen(), lead_in: getLeadIn(), override: sec.status === 'skipped' });
+      $('#sp-progress', m).classList.remove('hidden'); $('#sp-stage', m).textContent = 'Waiting to search…'; $('#sp-bar', m).style.width = '2%';
+      pollScan();
+    } catch (e) { toastErr(e); btn.disabled = false; }
+  };
+  if (['queued', 'scanning'].includes(sec.status)) { $('#sp-find', m).disabled = true; $('#sp-progress', m).classList.remove('hidden'); $('#sp-stage', m).textContent = sec.stage || ''; pollScan(); }
 }
 
 // ---------------------------------------------------------------- Review
@@ -932,11 +1020,11 @@ PANES.setup = async (el) => {
 PANES.tuning = async (el) => {
   const s = await get('/api/settings');
   const F = [
-    ['lead_in', 'Seconds before the spike the clip starts', 'number'], ['download_length', 'Seconds downloaded per moment (trim inside this)', 'number'],
-    ['max_moments', 'Max moments per video', 'number'], ['auto_render_top', 'Auto-render the top N moments per scan (default 1; render the rest on demand)', 'number'], ['spam_fraction', 'Flag a moment as chat spam when this share of messages repeat one thing', 'number'], ['min_words_per_min', 'Flag a clip as low speech below this many words per minute', 'number'], ['min_gap', 'Minimum gap between moments (s)', 'number'],
+    ['clip_len', 'Default clip length in seconds (the section picker offers 61 / 90 / 120 / custom)', 'number'], ['lead_in', 'Default lead-in: seconds before the moment the clip starts', 'number'],
+    ['max_moments', 'Max moments per search', 'number'], ['auto_render_top', 'Auto-render the top N moments after a search (default 0: nothing renders until you click Render)', 'number'], ['spam_fraction', 'Flag a moment as chat spam when this share of messages repeat one thing', 'number'], ['min_words_per_min', 'Flag a clip as low speech below this many words per minute', 'number'], ['min_gap', 'Minimum gap between moments (s)', 'number'],
     ['skip_start', 'Ignore the first N seconds of a stream', 'number'], ['chat_spike_factor', 'Chat spike factor (× usual rate = score 1)', 'number'],
     ['audio_spike_db', 'Audio spike (dB above usual = score 1)', 'number'], ['whisper_model', 'Whisper model (tiny / base / small / medium)', 'text'],
-    ['facecam_fraction', 'Facecam height as a fraction of the frame', 'number'], ['cache_cap_mb', 'Cache cap (MB)', 'number'], ['watch_interval_min', 'Check sources every N minutes', 'number'],
+    ['facecam_fraction', 'Facecam height as a fraction of the frame', 'number'], ['cache_cap_mb', 'Cache cap (MB)', 'number'], ['watch_interval_min', 'Check sources for new videos and live streams every N minutes (default 10)', 'number'],
   ];
   el.innerHTML = `<h2 style="margin-top:0">Tuning</h2><p class="sub">Moment detection and rendering. Defaults match the prototype that worked on real footage.</p>
     <div class="panel"><div class="form-grid">${F.map(([k, l, t]) => `<div class="field"><label>${esc(l)}</label><input type="${t}" step="any" data-k="${k}" value="${esc(s[k] ?? '')}"></div>`).join('')}</div>

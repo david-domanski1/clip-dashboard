@@ -65,6 +65,7 @@ def test_low_speech_moments_are_flagged_and_not_auto_rendered(fresh_db, campaign
     rows += [[600 + i * 0.1, ["yay", "prance", "prayer", "finally", "lacy"][i % 5]] for i in range(80)]   # busy chat, streamer asleep
     rows += [[1500 + i * 0.1, ["LMAO", "no way", "he died", "CLIP IT", "what"][i % 5]] for i in range(60)]
     monkeypatch.setattr("clipdash.chat.download_twitch_chat", lambda *a, **k: (a[1].write_text(json.dumps(sorted(rows))), True)[1])
+    db.set_setting("auto_render_top", 1)   # off by default; this test checks the flagged moment is skipped when it is on
     v = pipeline.add_video(campaign["id"], "https://www.twitch.tv/videos/123456789", queue=False)
     pipeline.scan_video(v["id"], lambda f, m=None: None, window="whole")
     ms = db.rows("moments", "video_id=?", (v["id"],), order="rank")
