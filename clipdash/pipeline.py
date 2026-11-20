@@ -583,14 +583,16 @@ def render_intro(clip_id: int, progress) -> None:
     work = _video_dir(db.get("videos", clip["video_id"])) / "narration"
     work.mkdir(parents=True, exist_ok=True)
     progress(0.1, "Synthesizing voice")
-    wav, voice_s, engine = tts.synthesize(hook, work / f"voice_{clip_id}.wav", narr.get("engine") or None)
+    wav, voice_s, engine = tts.synthesize(hook, work / f"voice_{clip_id}.wav", narr.get("engine") or None, narr.get("voice") or None)
+    progress(0.3, "Timing the words to the voice")
+    words = narration.word_timings(hook, wav, voice_s, db.get_setting("whisper_model") or "small")
     progress(0.4, f"Rendering intro ({engine} voice, {voice_s:.1f}s)")
     intro = config.CLIPS / f"{src.stem}_intro.mp4"
-    intro_s = narration.render_intro(src, float(clip.get("trim_start") or 0.0), hook, wav, voice_s, intro, work)
+    intro_s = narration.render_intro(src, float(clip.get("trim_start") or 0.0), hook, wav, voice_s, intro, work, words)
     progress(0.8, "Building preview")
     preview = config.CLIPS / f"{src.stem}_narrated_preview.mp4"
     narration.concat(intro, src, preview)
-    narr.update({"intro_path": str(intro), "intro_duration": round(intro_s, 2), "audio_path": str(wav), "engine": engine,
+    narr.update({"intro_path": str(intro), "intro_duration": round(intro_s, 2), "audio_path": str(wav), "engine": engine, "words": words,
                  "preview_path": str(preview), "status": "ready", "error": None, "base_duration": float(base_duration(clip) or tools.media_duration(src))})
     db.update("clips", clip_id, {"narration": narr, "final_path": None, "ai_text": 1})
     progress(1.0, "Intro ready")

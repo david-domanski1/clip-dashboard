@@ -106,3 +106,63 @@ def test_intro_duration_bounds():
     assert narration.intro_duration(1.0) == 3.0
     assert 3.0 < narration.intro_duration(2.7) < 4.0
     assert narration.intro_duration(9.0) == 6.0
+
+
+def test_words_are_timed_to_the_voice_and_written_as_karaoke(tmp_path):
+    from clipdash import narration
+    # one-to-one when Whisper found every word
+    spoken = [[0.1, 0.4, "He"], [0.45, 0.7, "had"], [0.75, 0.9, "no"], [0.95, 1.4, "idea."]]
+    words = narration.align_words("He had no idea.", spoken, 1.6)
+    assert [w[2] for w in words] == ["He", "had", "no", "idea."] and words[0][0] == 0.1 and words[-1][1] == 1.4
+    # spread by letter count between the first and last spoken word when the counts differ
+    words = narration.align_words("He had no idea.", [[0.2, 0.5, "he had"], [0.6, 1.4, "no idea"]], 1.6)
+    assert len(words) == 4 and words[0][0] == 0.2 and abs(words[-1][1] - 1.4) < 0.01 and words[3][1] - words[3][0] > words[2][1] - words[2][0]
+    # no transcript at all: spread over the voice length
+    words = narration.align_words("He had no idea.", [], 2.0)
+    assert words[0][0] == 0.0 and abs(words[-1][1] - 2.0) < 0.01
+    ass = narration.write_intro_ass("He had no idea.", tmp_path / "i.ass", words).read_text()
+    assert "Style: Cap,Arial,78" in ass and "HE " in ass and "IDEA." in ass       # clip caption style
+    starts = [int(x) for x in __import__("re").findall(r"\\t\((\d+),", ass)]
+    assert len(starts) == 4 and starts[0] == 300 and starts == sorted(starts)     # each word appears at its spoken time, after the 0.3 s voice delay
+    assert ass.count("\\alpha&HFF&") == 4                                       # every word starts invisible (fill, outline and shadow)
+    plain = narration.write_intro_ass("Hook", tmp_path / "p.ass").read_text()
+    assert "\\fad" in plain and "\\alpha" not in plain
+
+
+def test_voice_engine_auto_order_follows_saved_keys(fresh_db, monkeypatch):
+    from clipdash import secrets_store, tts
+    monkeypatch.setattr(tts, "piper_installed", lambda: ["en_US-ryan-high"])
+    monkeypatch.setattr(secrets_store, "has", lambda k: False)
+    assert tts.default_order()[0] == "piper"
+    monkeypatch.setattr(secrets_store, "has", lambda k: k == "openai_api_key")
+    assert tts.default_order()[:2] == ["openai", "piper"]
+    monkeypatch.setattr(secrets_store, "has", lambda k: k in ("openai_api_key", "elevenlabs_api_key"))
+    assert tts.default_order()[:3] == ["elevenlabs", "openai", "piper"]
+    assert tts.piper_voice() == "en_US-ryan-high"
+    fresh_db.set_setting("piper_voice", "en_GB-alan-medium")           # chosen but not installed: best installed wins
+    assert tts.piper_voice() == "en_US-ryan-high"
+    v = tts.voices()
+    assert v["auto"] == "elevenlabs" and v["openai"]["current"] == "ash" and v["piper"]["voices"][0]["id"] == "en_US-ryan-high"
+
+
+def test_sample_is_cached_on_disk(fresh_db, monkeypatch, tmp_path):
+    from clipdash import tts
+    calls = []
+    def fake(text, out, voice=None):
+        calls.append(voice); out.write_bytes(b"x" * 2000); return out
+    monkeypatch.setitem(tts.ENGINES, "openai", fake)
+    monkeypatch.setattr(tts, "SAMPLE_DIR", tmp_path)
+    a = tts.sample("openai", "nova"); b = tts.sample("openai", "nova"); c = tts.sample("openai", "onyx")
+    assert a == b and a != c and calls == ["nova", "onyx"]
+
+
+def test_player_defaults_to_the_narrated_file(client, fresh_db, campaign, tmp_path):
+    prev = tmp_path / "prev.mp4"; prev.write_bytes(b"0")
+    vid = fresh_db.insert("videos", {"campaign_id": campaign["id"], "platform": "youtube", "external_id": "p1", "url": "u", "status": "done"})
+    cid = fresh_db.insert("clips", {"video_id": vid, "campaign_id": campaign["id"], "path": "/nonexistent.mp4", "source_start": 0, "source_length": 90, "duration": 80.0, "status": "pending",
+                                    "narration": {"enabled": True, "status": "ready", "preview_path": str(prev), "intro_duration": 4.2}})
+    c = client.get(f"/api/clips/{cid}").json()
+    assert c["play_url"] == f"/media/clip/{cid}?narrated=1" and c["intro_offset"] == 4.2
+    fresh_db.update("clips", cid, {"narration": {"enabled": False, "status": "ready", "preview_path": str(prev)}})
+    c = client.get(f"/api/clips/{cid}").json()
+    assert c["play_url"] == c["video_url"] and c["intro_offset"] == 0

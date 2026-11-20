@@ -139,7 +139,8 @@ def setup_checks():
         "youtube_client_secret", "tiktok_client_key", "tiktok_client_secret", "facebook_app_id", "facebook_app_secret", "service_api_key",
         "anthropic_api_key", "openai_api_key", "elevenlabs_api_key")},
         "tts": tts.engines_status(), "llm": {"ok": llm_ok, "detail": llm_why, "provider": hooks.provider()},
-        "settings": {k: db.get_setting(k) for k in ("llm_provider", "llm_model", "tts_engine", "piper_voice")},
+        "settings": {k: db.get_setting(k) for k in ("llm_provider", "llm_model", "tts_engine", "piper_voice", "openai_voice", "openai_tts_model", "elevenlabs_voice_id")},
+        "voices": tts.voices(),
         "callback_urls": {"tiktok": f"http://127.0.0.1:{config.PORT}/oauth/callback/tiktok/",
                           "instagram": f"http://localhost:{config.PORT}/oauth/callback/instagram/"}}
 
@@ -149,7 +150,23 @@ def setup_action(body: dict):
     action = body.get("action")
     if action not in ("install_tdcli", "download_whisper", "download_piper_voice"):
         _bad("Unknown action")
-    return {"job_id": jobs.enqueue(action, {})}
+    payload = {"voice": body["voice"]} if body.get("voice") else {}
+    return {"job_id": jobs.enqueue(action, payload)}
+
+
+@app.get("/api/tts/voices")
+def tts_voices():
+    return tts.voices()
+
+
+@app.get("/api/tts/sample")
+def tts_sample(engine: str, voice: str | None = None):
+    """A two-second sample of one voice, cached on disk after the first play."""
+    try:
+        p = tts.sample(engine, voice or None)
+    except tools.ToolError as e:
+        raise HTTPException(400, str(e))
+    return FileResponse(p, media_type="audio/wav")
 
 
 @app.post("/api/setup/secrets")
@@ -186,7 +203,7 @@ def get_settings():
 def put_settings(body: dict):
     for k, v in body.items():
         if k in config.DEFAULT_SETTINGS or k in ("dry_run", "auto_render_top", "service_base_url", "tiktok_pkce_hex", "setup_done",
-                                                  "elevenlabs_voice_id", "elevenlabs_model", "system_voice"):
+                                                  "elevenlabs_voice_id", "elevenlabs_model", "system_voice", "openai_voice", "openai_tts_model"):
             db.set_setting(k, v)
     return db.all_settings()
 
@@ -637,6 +654,9 @@ def _clip_full(c: dict) -> dict:
     c["posts"] = db.rows("posts", "clip_id=?", (c["id"],))
     n = c.get("narration") or {}
     c["narration_preview_url"] = f"/media/clip/{c['id']}?narrated=1" if n.get("preview_path") and Path(n["preview_path"]).exists() else None
+    # What the Review player and the Publish preview play by default: the narrated file when narration is on and ready.
+    c["play_url"] = c["narration_preview_url"] if n.get("enabled") and n.get("status") == "ready" and c["narration_preview_url"] else c["video_url"]
+    c["intro_offset"] = float(n.get("intro_duration") or 0) if c["play_url"] == c["narration_preview_url"] else 0.0
     c["narration_allowed"], c["narration_reason"] = rules.narration_allowed(campaign) if campaign else (False, "")
     source = db.get("sources", video["source_id"]) if video and video.get("source_id") else None
     c["source"] = {k: source.get(k) for k in ("id", "name", "facecam", "layout")} if source else None
@@ -767,6 +787,8 @@ def set_narration(cid: int, body: dict):
         n["chosen"] = t if body["hook"] else ""
     if "engine" in body:
         n["engine"] = body["engine"] or None
+    if "voice" in body:
+        n["voice"] = body["voice"] or None
     enabled = bool(body.get("enabled", n.get("enabled", False)))
     if enabled:
         ok, why = rules.narration_allowed(campaign)
@@ -774,7 +796,8 @@ def set_narration(cid: int, body: dict):
             _bad(why)
         if not n.get("chosen"):
             _bad("Pick or write a hook first")
-    changed_hook = n.get("chosen") != (clip.get("narration") or {}).get("chosen") or n.get("engine") != (clip.get("narration") or {}).get("engine")
+    old = clip.get("narration") or {}
+    changed_hook = n.get("chosen") != old.get("chosen") or n.get("engine") != old.get("engine") or n.get("voice") != old.get("voice")
     n["enabled"] = enabled
     data = {"narration": n, "final_path": None, "ai_text": 1 if enabled else 0}
     if clip["status"] == "approved":

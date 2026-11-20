@@ -636,7 +636,8 @@ async function openClip(id) {
   const m = modal(`<div class="modal-head"><div><h2 style="margin:0">${esc(cl.video?.title || 'Clip')}</h2><span class="small muted">from ${fmtTime(cl.source_start)} · ${cl.moment ? esc(momentStrength(cl.moment)) : ''}${cl.moment?.chat_words?.length ? ' · chat was saying: ' + cl.moment.chat_words.map(esc).join(', ') : ''}</span></div>
       <div class="row"><span class="small muted kbd-hint">space play · A approve · R reject · → next</span>${nextId ? `<button class="btn sm" id="next-clip">Next clip →</button>` : ''}<button class="btn ghost" onclick="closeModal()">✕</button></div></div>
     <div class="review-layout">
-      <div class="review-video"><video id="rv" src="${cl.video_url}" controls playsinline></video></div>
+      <div class="review-video"><video id="rv" src="${cl.play_url || cl.video_url}" controls playsinline></video>
+        <div class="row" id="play-toggle" style="justify-content:center;margin-top:6px;gap:6px"></div></div>
       <div class="review-side">
         ${noFacecam ? `<div class="callout" id="fc-banner"><b>Facecam not set for this streamer — set it once.</b> <span class="small muted">Clips use the gameplay-only layout until then.</span> <button class="btn sm yellow" id="fc-open" style="margin-left:6px">Set it now</button><div id="fc-inline" class="hidden" style="margin-top:10px"></div></div>` : ''}
         <div class="panel">
@@ -650,7 +651,7 @@ async function openClip(id) {
             <span class="small" id="approve-why" style="flex:1"></span>
           </div>
         </div>
-        <details class="panel sect"><summary>Trim <span class="small muted" id="trim-len"></span></summary>
+        <details class="panel sect" id="trim-sect"><summary>Trim <span class="small muted" id="trim-len"></span></summary>
           <div class="trim" style="margin-top:8px">
             <label class="small muted">Start <span id="ts-v"></span></label><input type="range" id="ts" min="0" max="${cl.duration}" step="0.1" value="${cl.trim_start}">
             <label class="small muted">End <span id="te-v"></span></label><input type="range" id="te" min="0" max="${cl.duration}" step="0.1" value="${cl.trim_end || cl.duration}">
@@ -669,6 +670,22 @@ async function openClip(id) {
       </div>
     </div>`);
   const v = $('#rv', m), ts = $('#ts', m), te = $('#te', m);
+  // Which file the player shows: the narrated one (intro + clip) when narration is on, with a small Original toggle.
+  let playing = (cl.play_url && cl.play_url !== cl.video_url) ? 'narrated' : 'original';
+  const setPlayer = (which, autoplay = false) => {
+    playing = which;
+    const src = which === 'narrated' ? cl.narration_preview_url : cl.video_url;
+    if (v.getAttribute('src') !== src) { v.src = src; if (autoplay) v.play(); }
+    drawToggle();
+  };
+  const drawToggle = () => {
+    const n = cl.narration || {};
+    const has = n.enabled && n.status === 'ready' && cl.narration_preview_url;
+    $('#play-toggle', m).innerHTML = has ? `<span class="small muted">Playing:</span><button class="btn sm ${playing === 'narrated' ? 'primary' : 'ghost'}" data-play="narrated">With intro</button><button class="btn sm ${playing === 'original' ? 'primary' : 'ghost'}" data-play="original">Original</button>` : '';
+    $$('#play-toggle [data-play]', m).forEach((b) => b.onclick = () => setPlayer(b.dataset.play, true));
+  };
+  drawToggle();
+  const introOff = () => (playing === 'narrated' ? Number((cl.narration || {}).intro_duration || 0) : 0);   // seek offset while the narrated file plays
   const minLen = camp.min_len || 61, maxLen = camp.max_len || 0;
   const trimOk = () => { const len = Number(te.value) - Number(ts.value); return len >= minLen && (!maxLen || len <= maxLen); };
   const updTrim = () => {
@@ -694,13 +711,13 @@ async function openClip(id) {
     if (!why) $('#approve-why', m).textContent = 'Ready to approve.';
   };
   $$('#checks input', m).forEach((i) => i.onchange = gate);
-  ts.oninput = () => { updTrim(); v.currentTime = Number(ts.value); };
-  te.oninput = () => { updTrim(); v.currentTime = Math.max(0, Number(te.value) - 1); };
-  $('#ts-now', m).onclick = () => { ts.value = v.currentTime.toFixed(1); updTrim(); };
-  $('#te-now', m).onclick = () => { te.value = v.currentTime.toFixed(1); updTrim(); };
+  ts.oninput = () => { updTrim(); v.currentTime = Number(ts.value) + introOff(); };
+  te.oninput = () => { updTrim(); v.currentTime = Math.max(0, Number(te.value) - 1) + introOff(); };
+  $('#ts-now', m).onclick = () => { ts.value = Math.max(0, v.currentTime - introOff()).toFixed(1); updTrim(); };
+  $('#te-now', m).onclick = () => { te.value = Math.max(0, v.currentTime - introOff()).toFixed(1); updTrim(); };
   let looping = false;
-  $('#trim-play', m).onclick = () => { looping = true; v.currentTime = Number(ts.value); v.play(); };
-  v.ontimeupdate = () => { if (looping && v.currentTime >= Number(te.value)) { v.pause(); looping = false; } };
+  $('#trim-play', m).onclick = () => { looping = true; v.currentTime = Number(ts.value) + introOff(); v.play(); };
+  v.ontimeupdate = () => { if (looping && v.currentTime - introOff() >= Number(te.value)) { v.pause(); looping = false; } };
   const save = async (body) => { try { cl = await put(`/api/clips/${cl.id}`, body); renderRules(); return true; } catch (e) { toastErr(e); return false; } };
   $('#trim-save', m).onclick = async () => { if (await save({ trim_start: Number(ts.value), trim_end: Number(te.value) })) toast('Trim saved'); };
   $('#shift-back', m).onclick = () => post(`/api/clips/${cl.id}/rerender`, { shift: -15 }).then(() => { closeModal(); toast('Re-cutting'); render(); }).catch(toastErr);
@@ -715,6 +732,7 @@ async function openClip(id) {
     gate();
   };
   renderRules(); updTrim();
+  $('#trim-sect', m).ontoggle = () => { if ($('#trim-sect', m).open && playing === 'narrated') { setPlayer('original'); toast('Showing the original while you trim; the intro is added in front of the trimmed clip'); } };
   get(`/api/clips/${cl.id}/hooks`).then((cands) => {
     const alts = cands.filter((h) => h.text !== cl.hook).slice(0, 3);
     $('#hook-cands', m).innerHTML = alts.map((h) => `<span class="chip" title="said at ${fmtTime(h.t)}">${esc(h.text)}</span>`).join('');
@@ -740,17 +758,18 @@ async function openClip(id) {
       <div class="field"><label>Hook (under 15 words, factual, no profanity)</label><input type="text" id="n-hook" value="${esc(n.chosen || '')}"></div>
       <div class="chips" id="n-alts">${(n.hooks || []).map((h) => `<span class="chip ${h === n.chosen ? 'on' : ''}">${esc(h)}</span>`).join('')}</div>
       <div class="row" style="margin-top:8px"><button class="btn sm" id="n-gen">Generate 3 hooks</button>
-        <select id="n-engine" style="width:auto"><option value="">Voice: auto (Piper → system)</option><option value="piper" ${n.engine === 'piper' ? 'selected' : ''}>Piper (local)</option><option value="system" ${n.engine === 'system' ? 'selected' : ''}>System voice</option><option value="elevenlabs" ${n.engine === 'elevenlabs' ? 'selected' : ''}>ElevenLabs</option></select>
+        <select id="n-engine" style="width:auto"><option value="">Voice: auto (ElevenLabs → OpenAI → Piper)</option><option value="elevenlabs" ${n.engine === 'elevenlabs' ? 'selected' : ''}>ElevenLabs</option><option value="openai" ${n.engine === 'openai' ? 'selected' : ''}>OpenAI</option><option value="piper" ${n.engine === 'piper' ? 'selected' : ''}>Piper (local)</option><option value="system" ${n.engine === 'system' ? 'selected' : ''}>System voice</option></select>
+        <a class="small" href="#/settings/setup" onclick="closeModal()">pick voices ↗</a>
         <span class="grow"></span>
         ${n.enabled ? `<button class="btn sm" id="n-off">Turn narration off</button><button class="btn sm primary" id="n-on">Re-render intro</button>` : `<button class="btn sm primary" id="n-on">Enable narration & render intro</button>`}</div>
       ${n.status === 'error' ? `<div class="small bad-text" style="margin-top:6px">${esc(n.error_text || reasonOf(n.error))}</div>` : ''}
-      ${n.enabled && n.status === 'ready' ? `<div class="row" style="margin-top:8px"><span class="small muted">Intro ${(n.intro_duration || 0).toFixed(1)} s (${esc(n.engine || '')} voice) · total ${fmtTime(cl.effective_duration)}</span><button class="btn sm" id="n-preview">▶ Preview with intro</button><button class="btn sm ghost" id="n-plain">▶ Original</button></div>` : ''}`;
+      ${n.enabled && n.status === 'ready' ? `<div class="row" style="margin-top:8px"><span class="small muted">Intro ${(n.intro_duration || 0).toFixed(1)} s (${esc(n.engine || '')} voice, words appear in sync) · total ${fmtTime(cl.effective_duration)} · the player above shows it; use the Original toggle to compare.</span></div>` : ''}`;
     $$('#n-alts .chip', m).forEach((ch) => ch.onclick = () => { $('#n-hook', m).value = ch.textContent; });
     $('#n-gen', m).onclick = async () => { const b = $('#n-gen', m); b.disabled = true; b.textContent = 'Generating…'; try { const r = await post(`/api/clips/${cl.id}/narration/hooks`); cl.narration = r.narration; renderNarr(); toast('Hooks ready; pick or edit one'); } catch (e) { toastErr(e); b.disabled = false; b.textContent = 'Generate 3 hooks'; } };
     $('#n-on', m).onclick = async () => { try { cl = await put(`/api/clips/${cl.id}/narration`, { hook: $('#n-hook', m).value, engine: $('#n-engine', m).value, enabled: true }); renderRules(); renderNarr(); toast('Rendering the intro in the background'); } catch (e) { toastErr(e); } };
     const off = $('#n-off', m); if (off) off.onclick = async () => { try { cl = await put(`/api/clips/${cl.id}/narration`, { enabled: false }); renderRules(); renderNarr(); } catch (e) { toastErr(e); } };
-    const pv = $('#n-preview', m); if (pv) pv.onclick = () => { v.src = cl.narration_preview_url; v.play(); };
-    const pl = $('#n-plain', m); if (pl) pl.onclick = () => { v.src = cl.video_url; v.play(); };
+    const nowHas = n.enabled && n.status === 'ready' && cl.narration_preview_url;
+    if (nowHas && playing === 'original' && !$('#play-toggle [data-play]', m)) setPlayer('narrated'); else if (!nowHas && playing === 'narrated') setPlayer('original'); else drawToggle();
     gate();
   };
   renderNarr();
@@ -916,6 +935,16 @@ VIEWS.submissions = async (el) => {
   if (posts.some((p) => p.link_state === 'pending')) { clearInterval(S.linkPoll); S.linkPoll = setInterval(() => { if (S.view === 'submissions' && !$('#modal-root').innerHTML) render(); else clearInterval(S.linkPoll); }, 15000); }
 };
 
+// Voice pickers for Settings → Setup: one list per engine, a radio per voice, "Play sample" (2 s, cached), Download for Piper.
+function voicePickers(v) {
+  const block = (eng, title, data, note) => `<div class="panel"><b>${esc(title)}</b> <span class="small muted">${esc(note)}</span>
+    ${data.voices.map((x) => `<div class="row small" style="padding:4px 0;border-bottom:1px solid var(--line)"><label class="check" style="padding:0;flex:1"><input type="radio" name="v-${eng}" value="${esc(x.id)}" ${x.id === data.current ? 'checked' : ''} ${x.installed === false ? 'disabled' : ''}> ${esc(x.label)}</label>
+      ${x.installed === false ? `<button class="btn sm" data-action="download_piper_voice" data-voice="${esc(x.id)}">Download</button>` : `<button class="btn sm" data-sample="${eng}" data-voice="${esc(x.id)}" ${data.ready === false ? 'disabled title="save the key first"' : ''}>▶ Play sample</button>`}</div>`).join('')}</div>`;
+  return block('piper', 'Piper (local, free)', v.piper, 'best-sounding first; download once (60–120 MB)')
+    + block('openai', 'OpenAI', v.openai, v.openai.ready ? 'model ' + v.openai.model : 'save the OpenAI key to use these')
+    + block('elevenlabs', 'ElevenLabs', v.elevenlabs, v.elevenlabs.ready ? 'voices on your account' : 'save the ElevenLabs key to list your voices');
+}
+
 // ---------------------------------------------------------------- Settings (tabs: Tuning · Setup · Accounts · Stats)
 const PANES = {};
 const SETTINGS_TABS = [['tuning', 'Tuning'], ['setup', 'Setup'], ['accounts', 'Accounts'], ['stats', 'Stats']];
@@ -996,20 +1025,32 @@ PANES.setup = async (el) => {
         <div class="field"><label>Hook writer (LLM)</label><select id="set-llm"><option value="anthropic" ${s.settings.llm_provider !== 'openai' ? 'selected' : ''}>Anthropic Claude</option><option value="openai" ${s.settings.llm_provider === 'openai' ? 'selected' : ''}>OpenAI</option></select></div>
         <div class="field"><label>Anthropic API key ${s.secrets.anthropic_api_key ? `<span class="ok-text">(saved ${esc(s.secrets.anthropic_api_key)})</span>` : ''}</label><input type="password" id="sec-anth"></div>
         <div class="field"><label>OpenAI API key ${s.secrets.openai_api_key ? `<span class="ok-text">(saved ${esc(s.secrets.openai_api_key)})</span>` : ''}</label><input type="password" id="sec-oai"></div>
-        <div class="field"><label>Voice engine</label><select id="set-tts"><option value="auto" ${s.settings.tts_engine === 'auto' ? 'selected' : ''}>Auto (Piper, then system voice)</option><option value="piper" ${s.settings.tts_engine === 'piper' ? 'selected' : ''}>Piper (local, free)</option><option value="system" ${s.settings.tts_engine === 'system' ? 'selected' : ''}>System voice</option><option value="elevenlabs" ${s.settings.tts_engine === 'elevenlabs' ? 'selected' : ''}>ElevenLabs</option></select></div>
+        <div class="field"><label>Voice engine</label><select id="set-tts"><option value="auto" ${s.settings.tts_engine === 'auto' ? 'selected' : ''}>Auto (ElevenLabs if key → OpenAI if key → Piper → system voice)</option><option value="elevenlabs" ${s.settings.tts_engine === 'elevenlabs' ? 'selected' : ''}>ElevenLabs</option><option value="openai" ${s.settings.tts_engine === 'openai' ? 'selected' : ''}>OpenAI</option><option value="piper" ${s.settings.tts_engine === 'piper' ? 'selected' : ''}>Piper (local, free)</option><option value="system" ${s.settings.tts_engine === 'system' ? 'selected' : ''}>System voice</option></select></div>
+        <div class="field"><label>OpenAI voice model</label><select id="set-oai-model"><option value="gpt-4o-mini-tts" ${s.settings.openai_tts_model !== 'tts-1-hd' ? 'selected' : ''}>gpt-4o-mini-tts</option><option value="tts-1-hd" ${s.settings.openai_tts_model === 'tts-1-hd' ? 'selected' : ''}>tts-1-hd</option></select></div>
         <div class="field"><label>ElevenLabs API key ${s.secrets.elevenlabs_api_key ? '<span class="ok-text">(saved)</span>' : ''}</label><input type="password" id="sec-el"></div>
       </div>
       <div>${s.tts.map((t) => `<div class="rule ${t.ok ? '' : 'bad'}"><span class="dot"></span><b style="min-width:200px">${esc(t.label)}</b><span class="grow">${esc(t.detail)}</span>${t.id === 'piper' && !t.ok ? '<button class="btn sm" data-action="download_piper_voice">Download voice</button>' : ''}</div>`).join('')}
         <div class="rule ${s.llm.ok ? '' : 'bad'}"><span class="dot"></span><b style="min-width:200px">Hook writer</b><span class="grow">${esc(s.llm.ok ? 'key saved for ' + s.llm.provider : s.llm.detail)}</span></div></div>
-      <div class="small muted" style="margin-top:6px">Narration is off per campaign by default and locked off where the rules ban AI content. Hooks are always shown to you before anything renders.</div></div>
+      <h3>Voices <span class="small muted">· "auto" currently uses ${esc(s.voices.auto)}</span></h3>
+      <div class="grid cols-3" id="voice-pick">${voicePickers(s.voices)}</div>
+      <audio id="voice-audio"></audio>
+      <div class="small muted" style="margin-top:6px">Narration is off per campaign by default and locked off where the rules ban AI content. Hooks are always shown to you before anything renders. Samples are kept after the first play, so they are instant.</div></div>
     <div class="row" style="margin-top:14px"><button class="btn primary" id="sec-save">Save credentials</button><span class="grow"></span>${allOk ? '<button class="btn yellow" id="setup-done">Setup complete → go to Today</button>' : '<span class="muted small">Fix the red items above to finish setup.</span>'}</div>
     <p class="small muted" style="margin-top:14px">Credentials are stored in <code>data/secrets.json</code> (gitignored, user-only permissions), never in the repository. See <code>.env.example</code> for the list.</p>`;
-  $$('[data-action]').forEach((b) => b.onclick = () => post('/api/setup/action', { action: b.dataset.action }).then(() => { toast('Downloading in the background'); b.disabled = true; }).catch(toastErr));
+  $$('[data-action]').forEach((b) => b.onclick = () => post('/api/setup/action', { action: b.dataset.action, voice: b.dataset.voice }).then(() => { toast('Downloading in the background'); b.disabled = true; }).catch(toastErr));
+  $$('[data-sample]').forEach((b) => b.onclick = async () => {
+    const a = $('#voice-audio'); const was = b.textContent; b.disabled = true; b.textContent = '…';
+    a.src = `/api/tts/sample?engine=${b.dataset.sample}&voice=${encodeURIComponent(b.dataset.voice || '')}&t=${Date.now()}`;
+    try { await a.play(); } catch (e) { toast('Could not play the sample (is a key saved for this engine?)', 'err'); }
+    b.disabled = false; b.textContent = was;
+  });
   $('#sec-save').onclick = async () => {
     const body = {}; const take = (id, key) => { const v = $(id).value.trim(); if (v) body[key] = v; };
     take('#sec-yt', 'youtube_client_secret'); take('#sec-ttk', 'tiktok_client_key'); take('#sec-tts', 'tiktok_client_secret'); take('#sec-fbid', 'facebook_app_id'); take('#sec-fbs', 'facebook_app_secret'); take('#sec-svc', 'service_api_key');
     take('#sec-anth', 'anthropic_api_key'); take('#sec-oai', 'openai_api_key'); take('#sec-el', 'elevenlabs_api_key');
-    try { await put('/api/settings', { llm_provider: $('#set-llm').value, tts_engine: $('#set-tts').value }); } catch (e) { toastErr(e); }
+    const pick = (eng) => ($(`#voice-pick input[name="v-${eng}"]:checked`) || {}).value;
+    try { await put('/api/settings', { llm_provider: $('#set-llm').value, tts_engine: $('#set-tts').value, openai_tts_model: $('#set-oai-model').value,
+      ...(pick('piper') ? { piper_voice: pick('piper') } : {}), ...(pick('openai') ? { openai_voice: pick('openai') } : {}), ...(pick('elevenlabs') ? { elevenlabs_voice_id: pick('elevenlabs') } : {}) }); } catch (e) { toastErr(e); }
     if (!Object.keys(body).length) { toast('Settings saved'); render(); return; }
     try { await post('/api/setup/secrets', body); toast('Saved'); render(); } catch (e) { toastErr(e); }
   };

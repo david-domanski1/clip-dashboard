@@ -1,8 +1,14 @@
-"""Narrated hook intro: 3–6 s of the clip's first frame (slow push-in, darkened ~40%) with the hook as large centred
-text while a synthetic voice reads it, concatenated in front of the real clip. The original clip is kept, so
-narration can be switched off and the clip re-exported without it."""
+"""Narrated hook intro: 3–6 s of the clip's first frame (slow push-in, darkened ~40%) while a synthetic voice reads the
+hook. The hook's words appear one by one in sync with the voice, in the same caption style as the clip, and the intro is
+concatenated in front of the real clip. The original clip is kept, so narration can be switched off and the clip
+re-exported without it.
+
+Word timing: the voice file is run through the same Whisper model as the clip captions (word timestamps); the hook's own
+words are then laid on those timings (one-to-one when the counts match, otherwise spread by letter count between the
+first and last spoken word). If Whisper is unavailable the words are spread evenly across the voice's length."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from . import cut, tools
@@ -16,9 +22,56 @@ def intro_duration(voice_s: float) -> float:
     return max(MIN_S, min(MAX_S, VOICE_START_S + voice_s + 0.6))
 
 
-def write_intro_ass(hook: str, out: Path, w: int = 1080, h: int = 1920) -> Path:
-    text = hook.replace("{", "(").replace("}", ")").replace("\\", "/")
-    ass = f"""[Script Info]
+def _tokens(text: str) -> list[str]:
+    return [w for w in re.split(r"\s+", text.strip()) if w]
+
+
+def spread_words(words: list[str], start: float, end: float) -> list[tuple[float, float, str]]:
+    """Lay words between start and end in proportion to their length (longer words take longer to say)."""
+    if not words:
+        return []
+    end = max(end, start + 0.1 * len(words))
+    weights = [max(1, len(re.sub(r"[^\w]", "", w))) + 1 for w in words]
+    total = float(sum(weights))
+    out, t = [], start
+    for w, wt in zip(words, weights):
+        d = (end - start) * wt / total
+        out.append((round(t, 2), round(t + d, 2), w))
+        t += d
+    return out
+
+
+def align_words(hook: str, spoken: list[list], voice_s: float) -> list[tuple[float, float, str]]:
+    """Timings for the hook's words from a word-timed transcript of the voice file ([[start, end, word], ...])."""
+    words = _tokens(hook)
+    if not words:
+        return []
+    spoken = [s for s in spoken if s[1] > s[0] >= 0]
+    if not spoken:
+        return spread_words(words, 0.0, voice_s)
+    if len(spoken) == len(words):
+        return [(round(float(s[0]), 2), round(float(s[1]), 2), w) for s, w in zip(spoken, words)]
+    return spread_words(words, float(spoken[0][0]), float(spoken[-1][1]))
+
+
+def word_timings(hook: str, voice_wav: Path, voice_s: float, model_name: str = "small") -> list[tuple[float, float, str]]:
+    """Word-by-word timings of the hook as spoken in voice_wav; falls back to an even spread if Whisper cannot run."""
+    try:
+        spoken = cut.transcribe(voice_wav, model_name)
+    except Exception:  # noqa: BLE001
+        spoken = []
+    return align_words(hook, spoken, voice_s)
+
+
+def _esc(s: str) -> str:
+    return s.replace("{", "(").replace("}", ")").replace("\\", "/").upper()
+
+
+def write_intro_ass(hook: str, out: Path, words: list[tuple[float, float, str]] | None = None, voice_start: float = VOICE_START_S,
+                    w: int = 1080, h: int = 1920) -> Path:
+    """The hook in the clip's caption style (same font, size, outline and position as cut.write_ass), revealed word by word.
+    Uses ASS karaoke timing with an invisible 'not yet sung' colour, so each word pops in when the voice reaches it."""
+    hdr = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {w}
 PlayResY: {h}
@@ -26,23 +79,32 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Hook,Arial,88,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6,3,5,90,90,120,1
+Style: Cap,Arial,78,&H00FFFFFF,&HFF000000,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6,2,2,60,60,520,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.00,9:59:59.00,Hook,,0,0,0,,{{\\fad(150,250)}}{text}
 """
-    out.write_text(ass, encoding="utf-8")
+    if not words:
+        text = "{\\fad(150,250)}" + _esc(hook)
+    else:
+        # Each word starts fully transparent (fill, outline and shadow) and switches to visible at its spoken time
+        # (\t times are milliseconds from the line start). Invisible words still take up space, so the layout never jumps.
+        parts = []
+        for start, end, word in words:
+            at = int(round((voice_start + float(start)) * 1000))
+            parts.append(f"{{\\alpha&HFF&\\t({at},{at + 40},\\alpha&H00&)}}{_esc(word)} ")
+        text = "".join(parts).rstrip()
+    out.write_text(hdr + f"Dialogue: 0,0:00:00.00,9:59:59.00,Cap,,0,0,0,,{text}\n", encoding="utf-8")
     return out
 
 
 def render_intro(clip_path: Path, frame_at: float, hook: str, voice_wav: Path, voice_s: float, out: Path,
-                 work_dir: Path) -> float:
+                 work_dir: Path, words: list[tuple[float, float, str]] | None = None) -> float:
     """Build the intro segment with the same video/audio parameters as the clip so it can be concatenated by copy."""
     work_dir.mkdir(parents=True, exist_ok=True)
     frame = work_dir / f"{out.stem}_frame.png"
     cut.extract_frame(clip_path, frame_at, frame)
-    ass = write_intro_ass(hook, work_dir / f"{out.stem}.ass")
+    ass = write_intro_ass(hook, work_dir / f"{out.stem}.ass", words)
     dur = intro_duration(voice_s)
     frames = int(dur * 60) + 1
     delay_ms = int(VOICE_START_S * 1000)

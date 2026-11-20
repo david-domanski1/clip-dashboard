@@ -29,8 +29,10 @@ DEFAULT_SETTINGS = {
     "min_speech_fraction": 0.12,
     "llm_provider": "anthropic",
     "llm_model": "",
-    "tts_engine": "auto",
-    "piper_voice": "en_US-lessac-medium",
+    "tts_engine": "auto",      # auto = ElevenLabs if a key is set, else OpenAI if set, else Piper, else the system voice
+    "openai_voice": "ash",
+    "openai_tts_model": "gpt-4o-mini-tts",
+    "piper_voice": "en_US-ryan-high",
     "skip_start": 120,
     "min_gap": 90,
     "bin_seconds": 10,

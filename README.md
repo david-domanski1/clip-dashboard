@@ -147,8 +147,11 @@ scanned exactly like campaign sources, but:
 ## Narrated hook intro (optional, off by default)
 
 A 3–6 second intro before a clip: a synthetic voice reads a one-sentence cliffhanger hook over the clip's first
-frame (slow push-in, darkened 40%) with the hook as large centred text, then the real clip plays. Voice starts
-within the first second; the real action starts by about second 4.
+frame (slow push-in, darkened 40%) while the hook's words appear one by one in sync with the voice, in the same
+caption style as the clip, then the real clip plays. Voice starts within the first second; the real action starts by
+about second 4. The word timing comes from running the voice file through the same Whisper model as the captions.
+When narration is on, the Review player and the Publish preview play the narrated file by default, with a small
+*Original* toggle under the player (opening *Trim* switches to the original, since trimming applies to the clip).
 
 - **Per campaign:** *AI narration allowed* in the campaign rules, default off. When the campaign's rules ban
   AI-generated content (the LACY campaign does; *Read page* detects "no AI" wording) it is locked off and the
@@ -157,8 +160,11 @@ within the first second; the real action starts by about second 4.
   Claude by default, OpenAI as the alternative; the key stays in `data/secrets.json`). Review shows the chosen
   hook as an editable field with three alternatives; nothing renders until you have seen it. Hooks must be under
   15 words, pass the profanity filter and stay factual about what happens in the clip.
-- **Voice:** Piper (local, free; one ~60 MB voice downloads on first use) or the computer's built-in voice
-  (macOS `say`, Windows speech), with ElevenLabs as an optional adapter behind a key.
+- **Voice:** *Auto* uses ElevenLabs if its key is saved, else OpenAI if its key is saved (`gpt-4o-mini-tts` or
+  `tts-1-hd`; voices such as ash, onyx, nova), else Piper (local, free; `en_US-ryan-high` by default, with
+  `en_US-hfc_male-medium` and `en_GB-alan-medium` as alternatives, each a one-time 60–120 MB download), else the
+  computer's built-in voice. Settings → Setup → Narration has a voice picker for Piper, OpenAI and ElevenLabs with a
+  two-second *Play sample* per voice; samples are kept on disk after the first play, so they are instant.
 - **Disclosure:** posts of narrated clips set YouTube's *altered or synthetic content* flag
   (`containsSyntheticMedia`) and TikTok's AI-generated label (`is_aigc`) automatically; the assisted route adds a
   reminder to the caption file. "AI voice" appears in the clip's rule results.
