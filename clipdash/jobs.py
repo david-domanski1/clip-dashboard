@@ -107,8 +107,12 @@ def check_cancelled() -> None:
 
 
 def _on_error(job: dict, err: str) -> None:
+    from . import events
     from .pipeline import _set_video
     p = job["payload"]
+    events.emit("job.failed", job=job, error=err)
+    if job["type"] == "render_clip" and p.get("clip_id"):
+        events.emit("clip.failed", clip_id=p["clip_id"], error=err)
     if job["type"] == "scan_video" and p.get("video_id"):
         _set_video(p["video_id"], status="error", stage="Scan failed", error=err[:1000])
     elif job["type"] == "render_clip" and p.get("clip_id"):

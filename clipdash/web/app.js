@@ -137,6 +137,19 @@ function jobsSummary(running, queued) {
 }
 
 const VIEWS = {};
+// Extension points used by feature scripts (clipdash/web/features/*.js, loaded after this file).
+const TODAY_EXTRAS = [];      // (t, c) => html, inserted on Today above "Needs attention"
+const REVIEW_EXTRAS = [];     // (ctx) => void, called when the Review modal opens
+const REVIEW_KEYS = {};       // key => (ctx) => void, extra shortcuts in the Review modal
+const SOURCE_EXTRAS = [];     // (src, card, c) => void, called for each source card
+const NAV_EXTRAS = [];        // {href, label, svg}
+function loadFeatures() {
+  return get('/api/features').then((list) => Promise.all(list.map((src) => new Promise((res) => { const sc = document.createElement('script'); sc.src = src; sc.onload = res; sc.onerror = () => { console.error('feature failed to load', src); res(); }; document.body.appendChild(sc); })))).catch(() => {});
+}
+function drawNavExtras() {
+  const nav = $('#nav');
+  NAV_EXTRAS.forEach((n) => { if ($(`#nav a[href="${n.href}"]`)) return; const a = document.createElement('a'); a.href = n.href; a.dataset.view = n.href.replace(/^#\//, '').split('/')[0]; a.innerHTML = `<i>${n.svg || ''}</i>${esc(n.label)}`; nav.appendChild(a); });
+}
 async function render() {
   let hash = location.hash.replace(/^#\/?/, '') || 'home';
   const first = hash.split('/')[0];
@@ -152,6 +165,8 @@ async function render() {
 window.addEventListener('hashchange', render);
 
 async function boot() {
+  await loadFeatures();
+  drawNavExtras();
   await refreshState();
   await loadCampaigns();
   if (!S.state.setup_done && !location.hash.includes('setup')) location.hash = '#/settings/setup';
@@ -195,6 +210,7 @@ VIEWS.home = async (el) => {
         <div class="step-body"><div class="step-title">New videos found <b class="count">${t.new_videos.length}</b></div>
           <div class="step-sub">${t.new_videos.map((n) => `<div class="attn"><span>New video found: <b>${esc(n.title)}</b>${n.live ? ' <b class="live-dot">LIVE</b>' : ''}<span class="muted"> · ${esc(n.source || n.platform)}${n.duration ? ' · ' + fmtTime(n.duration) : ''}</span></span><button class="btn sm primary" data-pick="${n.id}">Pick a section</button></div>`).join('')}</div></div>
       </div>` : ''}
+      ${TODAY_EXTRAS.map((f) => { try { return f(t, c) || ''; } catch (e) { console.error(e); return ''; } }).join('')}
       <div class="step ${t.attention.length ? 'warn' : 'done'}">
         <div class="step-n">!</div>
         <div class="step-body"><div class="step-title">Needs attention <b class="count">${t.attention.length}</b></div>
@@ -374,6 +390,7 @@ VIEWS.sources = async (el, arg) => {
     };
     const vbox = $('[data-videos]', d);
     if (open) for (const v of svids) renderVideo(v, vbox, c, svids.length);
+    SOURCE_EXTRAS.forEach((f) => { try { f(src, d, c); } catch (e) { console.error(e); } });
     list.appendChild(d);
   }
   if (loose.length) {
@@ -797,10 +814,13 @@ async function openClip(id) {
   $('#rerender', m).onclick = () => post(`/api/clips/${cl.id}/rerender`).then(() => { closeModal(); toast('Re-rendering'); render(); }).catch(toastErr);
   $('#reveal', m).onclick = () => post(`/api/clips/${cl.id}/reveal`).catch(toastErr);
   $('#delete', m).onclick = async () => { try { await del(`/api/clips/${cl.id}`); closeModal(); render(); } catch (e) { if (e.status === 409 && await confirmDlg(e.data.message, 'Delete anyway')) { await del(`/api/clips/${cl.id}?force=true`); closeModal(); render(); } else toastErr(e); } };
+  const ctx = { get cl() { return cl; }, m, v, camp, save, gate, nextId, setPlayer, renderRules };
+  REVIEW_EXTRAS.forEach((f) => { try { f(ctx); } catch (e) { console.error(e); } });
   // keyboard: space play/pause · A approve · R reject · → next clip (ignored while typing)
   const onKey = (e) => {
     if (!document.body.contains(m)) { document.removeEventListener('keydown', onKey); return; }
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+    if (REVIEW_KEYS[e.key]) { e.preventDefault(); REVIEW_KEYS[e.key](ctx); return; }
     if (e.key === ' ') { e.preventDefault(); if (v.paused) v.play(); else v.pause(); }
     else if (e.key === 'a' || e.key === 'A') { e.preventDefault(); approve(); }
     else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); reject(); }

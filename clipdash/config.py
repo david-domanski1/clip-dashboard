@@ -62,3 +62,12 @@ SUGGESTED_CREATORS = [
 def ensure_dirs() -> None:
     for d in (DATA, CACHE, CLIPS, FRAMES, TOOLS, MODELS):
         d.mkdir(parents=True, exist_ok=True)
+
+
+EXTRA_SETTINGS: dict = {}
+
+
+def register_settings(defaults: dict) -> None:
+    """Feature modules call this at import time; the keys become editable through PUT /api/settings and get defaults."""
+    EXTRA_SETTINGS.update(defaults)
+    DEFAULT_SETTINGS.update({k: v for k, v in defaults.items() if k not in DEFAULT_SETTINGS})

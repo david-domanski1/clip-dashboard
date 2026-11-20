@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import captions as cap
+from . import events
 from . import chat, config, cut, db, disk, narration, rules, signals, sources, speech, thumbs, tools, tts
 
 log = logging.getLogger("clipdash.pipeline")
@@ -340,6 +341,8 @@ def scan_video(video_id: int, progress, window=None) -> None:
             m["reasons"].append(f"Low speech: only {int(frac * 100)}% of the next 40 s has talking (scored down)")
         elif frac is not None:
             m["reasons"].append(f"Speech in {int(frac * 100)}% of the next 40 s")
+    # features may adjust scores in place (e.g. learned preferences); each should append a reason explaining why
+    events.emit("moments.scored", video=video, moments=moments, settings=settings)
     moments.sort(key=lambda m: -m["score"])
     # merge: drop un-rendered moments inside this window, insert the new ones, re-rank everything
     db.execute("DELETE FROM moments WHERE video_id=? AND status='found' AND t>=? AND t<=?", (video_id, start, end))
@@ -361,6 +364,7 @@ def scan_video(video_id: int, progress, window=None) -> None:
     ranges = merge_ranges(video.get("scanned_ranges") or [], (start, end))
     total = db.execute("SELECT COUNT(*) c FROM moments WHERE video_id=?", (video_id,)).fetchone()["c"]
     summary.update({"moments": total, "signals_used": list(sig)})
+    events.emit("scan.done", video_id=video_id, moments=len(moments))
     covered = sum(e - s for s, e in ranges) >= duration - 2
     stage = f"Scanned {label}: {len(moments)} moments" + ("" if covered else " · more of the VOD can be scanned")
     _set_video(video_id, status="scanned", stage=stage, progress=1.0, signals=summary, scanned_ranges=ranges, live=int(live))
@@ -539,6 +543,7 @@ def render_clip(clip_id: int, progress) -> None:
                                (f'%"video_id": {video["id"]}%',)).fetchone()["c"]
     if remaining == 0 and pending_scans == 0:
         _set_video(video["id"], status="done", stage="Clips ready for review", progress=1.0)
+    events.emit("clip.ready", clip_id=clip_id)
     progress(1.0, "Done")
 
 
@@ -724,8 +729,9 @@ def check_sources(progress, campaign_id: int | None = None) -> None:
             if added >= 5:
                 break
             row.update({"status": "new", "stage": NEW_STAGE, "scan_window": {"kind": "auto"}})
-            db.insert("videos", row)
+            new_id = db.insert("videos", row)
             log.info("New video found: %s (%s)%s", v.get("title"), v["url"], " LIVE" if v.get("live_now") else "")
+            events.emit("video.new", video=db.get("videos", new_id))
             added += 1
         db.update("sources", s["id"], {"last_checked": db.now()})
 

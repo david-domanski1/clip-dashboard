@@ -130,10 +130,33 @@ MIGRATIONS = {
 }
 
 
+SCHEMA_EXTRA: list[str] = []                       # CREATE TABLE IF NOT EXISTS … registered by feature modules
+MIGRATIONS_EXTRA: list[tuple[str, str, str]] = []   # (table, column, declaration) registered by feature modules
+
+
+def register_table(ddl: str) -> None:
+    """Feature modules call this at import time with a CREATE TABLE IF NOT EXISTS statement."""
+    if ddl not in SCHEMA_EXTRA:
+        SCHEMA_EXTRA.append(ddl)
+
+
+def register_column(table: str, name: str, decl: str) -> None:
+    """Feature modules call this at import time to add a column to a core table."""
+    if (table, name, decl) not in MIGRATIONS_EXTRA:
+        MIGRATIONS_EXTRA.append((table, name, decl))
+
+
 def init() -> None:
+    from . import features
+    features.load()                      # lets feature modules register their schema first
     c = conn()
     c.executescript(SCHEMA)
-    for table, cols in MIGRATIONS.items():
+    for ddl in SCHEMA_EXTRA:
+        c.executescript(ddl)
+    extra: dict[str, list] = {}
+    for table, name, decl in MIGRATIONS_EXTRA:
+        extra.setdefault(table, []).append((name, decl))
+    for table, cols in list(MIGRATIONS.items()) + list(extra.items()):
         have = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
         for name, decl in cols:
             if name not in have:

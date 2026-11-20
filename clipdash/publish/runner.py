@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .. import db, rules
+from .. import db, events, rules
 from .base import PublishResult, get_publisher
 
 
@@ -42,6 +42,8 @@ def apply_result(post: dict, res: PublishResult) -> None:
         fields["views_checked_at"] = db.now()
     db.update("posts", post["id"], fields)
     _log(post["id"], f"{res.status}: {res.detail}")
+    if res.status == "live" and prev != "live":
+        events.emit("post.live", post=db.get("posts", post["id"]))
 
 
 def publish_post(post_id: int, progress) -> None:
@@ -122,6 +124,7 @@ def refresh_stats(progress, campaign_id: int | None = None) -> None:
             continue
         if s and "views" in s:
             db.update("posts", post["id"], {"views": int(s["views"]), "views_checked_at": db.now()})
+            events.emit("post.views", post=db.get("posts", post["id"]), views=int(s["views"]))
 
 
 def mark_live(post_id: int, url: str) -> dict:

@@ -1261,6 +1261,17 @@ def index():
 app.mount("/static", StaticFiles(directory=str(config.WEB)), name="static")
 
 
+@app.get("/api/features")
+def list_features():
+    """UI scripts shipped by feature modules (clipdash/web/features/*.js), loaded after app.js."""
+    d = config.WEB / "features"
+    return sorted(f"/static/features/{p.name}" for p in d.glob("*.js")) if d.exists() else []
+
+
+from . import features as _features  # noqa: E402
+_features.register_all(app)
+
+
 @app.exception_handler(HTTPException)
 async def _http_exc(request: Request, exc: HTTPException):
     detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}

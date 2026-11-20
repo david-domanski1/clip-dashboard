@@ -6,11 +6,13 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from .. import db, jobs
+from .. import db, events, jobs
 
 _stop = threading.Event()
 _last = {"watch": 0.0, "stats": 0.0, "check": 0.0}
 _link_checks: dict[int, float] = {}
+_due_warned: set[int] = set()
+_missed_warned: set[int] = set()
 
 
 def _now() -> datetime:
@@ -52,6 +54,18 @@ def tick() -> None:
                 jobs.enqueue("check_post", {"post_id": post["id"]})
         elif state == "gave_up" and post.get("state_detail") != "No link from the service":
             db.update("posts", post["id"], {"state_detail": "No link from the service"})
+    # 2c. submission deadlines: warn once at 10 minutes left, once when missed
+    for post in db.rows("posts", "status='live' AND submitted_at IS NULL AND submission_deadline IS NOT NULL"):
+        dl = _parse(post["submission_deadline"])
+        if not dl:
+            continue
+        left = (dl - now).total_seconds() / 60
+        if 0 < left <= 10 and post["id"] not in _due_warned:
+            _due_warned.add(post["id"])
+            events.emit("submission.due", post=post, minutes_left=int(left))
+        elif left <= 0 and post["id"] not in _missed_warned:
+            _missed_warned.add(post["id"])
+            events.emit("submission.missed", post=post)
     # 3. watch sources
     interval = float(db.get_setting("watch_interval_min", 30)) * 60
     if time.time() - _last["watch"] > interval:
