@@ -31,6 +31,34 @@ function toast(msg, kind = '') {
 }
 const toastErr = (e) => toast(e.message || String(e), 'err');
 
+// Plain-language status words. Machine states stay in the API; people see these.
+const LABELS = {
+  clip: { rendering: 'Making clip…', pending: 'Ready to review', approved: 'Approved', rejected: 'Rejected', posted: 'Posted', error: 'Failed' },
+  video: { queued: 'Waiting to scan', scanning: 'Finding moments…', scanned: 'Moments found', rendering: 'Making clip…', done: 'Done', error: 'Failed', skipped: 'Outside campaign window' },
+  post: { publishing: 'Posting…', scheduled: 'Scheduled', pending: 'Processing on the platform', live: 'Posted', manual: 'Needs your upload', private: 'Posted as private', draft: 'Draft in your TikTok inbox', failed: 'Failed', cancelled: 'Cancelled' },
+  job: { queued: 'Waiting', running: 'Working…', done: 'Done', error: 'Failed', cancelled: 'Cancelled' },
+  account: { ready: 'Ready', connected: 'Connected', connecting: 'Connecting…', error: 'Failed', disconnected: 'Not connected' },
+};
+const reasonOf = (e) => { const line = String(e || '').trim().split('\n')[0]; return line || 'no reason was recorded — retry'; };
+function label(kind, status, error) {
+  if (['error', 'failed'].includes(status)) return 'Failed: ' + reasonOf(error);
+  return (LABELS[kind] || {})[status] || status;
+}
+const badge = (kind, status, error, extra = '') => `<span class="badge ${status} ${extra}" ${error ? `title="${esc(String(error).slice(0, 500))}"` : ''}>${esc(label(kind, status, error))}</span>`;
+// A moment's strength in words; the numbers go in the tooltip.
+function momentStrength(m) {
+  const txt = (m.reasons || []).join(' ');
+  const num = (re) => Number((txt.match(re) || [])[1]) || 0;
+  const spike = num(/Chat ([\d.]+)×/), hype = num(/(\d+)% hype/), heat = num(/most replayed' ([\d.]+)×/), db = num(/Audio \+(\d+) dB/), cues = num(/(\d+) cue words/);
+  if (spike >= 8 || hype >= 40 || heat >= 4) return 'Chat exploded';
+  if (spike >= 3 || heat >= 2 || db >= 8 || cues >= 6) return 'Big reaction';
+  if (spike >= 1.5 || hype >= 20 || heat >= 1.5 || db >= 4 || cues >= 3) return 'Some reaction';
+  return 'Quiet';
+}
+const FLAG_LABEL = { low_speech: 'Skipped: streamer not talking', chat_spam: 'Skipped: chat spam' };
+const flagLabel = (f) => FLAG_LABEL[f] || 'Skipped: ' + f;
+const emptyState = (text, btn, href) => `<div class="empty">${esc(text)} ${btn ? `<a class="btn sm primary" href="${href}" style="margin-left:8px">${esc(btn)} →</a>` : ''}</div>`;
+
 function modal(html, { narrow = false } = {}) {
   const root = $('#modal-root');
   root.innerHTML = `<div class="modal-bg"><div class="modal ${narrow ? 'narrow' : ''}">${html}</div></div>`;
@@ -393,9 +421,9 @@ function renderVideo(v, container, c, siblings) {
   const busy = ['scanning', 'queued'].includes(v.status);
   d.innerHTML = `
     <div>
-      <div class="row"><b>${esc(v.title || v.url)}</b> <span class="badge ${v.status}">${v.status === 'skipped' ? 'outside campaign window' : v.status}</span> ${v.live ? '<span class="badge pink">live now</span>' : (v.is_stream ? '<span class="badge">stream VOD</span>' : '')} ${v.platform === 'twitch' ? '<span class="badge">twitch</span>' : ''}</div>
+      <div class="row"><b>${esc(v.title || v.url)}</b> ${badge('video', v.status, v.error)} ${v.live ? '<span class="badge live-badge">LIVE</span>' : (v.is_stream ? '<span class="badge">stream VOD</span>' : '')} ${v.platform === 'twitch' ? '<span class="badge">twitch</span>' : ''}</div>
       <div class="small muted"><a href="${esc(v.url)}" target="_blank">${esc(v.url)}</a> · ${v.channel ? esc(v.channel) + ' · ' : ''}${v.duration ? fmtTime(v.duration) : ''} ${v.published_at ? '· published ' + fmtDate(v.published_at) : ''}</div>
-      <div class="small" style="margin-top:6px">${esc(v.stage || '')}${v.error ? ` <span class="bad-text">${esc(v.error.slice(0, 400))}</span>` : ''}</div>
+      <div class="small" style="margin-top:6px">${v.status === 'error' ? `<span class="bad-text">${esc(reasonOf(v.error))}</span>` : esc(v.stage || '')}</div>
       ${busy ? `<div class="progress" style="margin-top:6px;max-width:420px"><i style="width:${Math.round((v.progress || 0) * 100)}%"></i></div>` : ''}
       <div class="small muted" style="margin-top:6px">${ranges ? 'scanned ' + ranges + ' · ' : ''}${v.moment_count} moments${v.signals.signals_used ? ' from ' + v.signals.signals_used.join(' + ') : ''}${v.signals.chat_messages ? ` · ${fmtNum(v.signals.chat_messages)} chat messages` : ''}${v.signals.chat_error ? ` · <span class="warn-text">chat: ${esc(v.signals.chat_error.slice(0, 120))}</span>` : ''} · clips: ${Object.entries(cc).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'}</div>
       <div class="row" style="margin-top:8px" data-rescan-row><span class="small muted">Scan window:</span>${windowControls('v' + v.id, v.duration > 4 * 3600 ? 'last2h' : 'auto')}<button class="btn sm" data-rescan ${busy ? 'disabled' : ''}>${v.status === 'skipped' ? 'Scan anyway (override date window)' : (v.scanned_ranges?.length ? 'Scan this window' : 'Scan')}</button>
@@ -405,10 +433,12 @@ function renderVideo(v, container, c, siblings) {
     <div class="row" style="align-items:flex-start">
       ${v.moment_count ? `<button class="btn sm" data-show>Show / hide moments</button>` : ''}
       ${cc.pending ? `<a class="btn sm primary" href="#/review/${v.id}">Review ${cc.pending}</a>` : ''}
+      ${v.status === 'error' ? `<button class="btn sm yellow" data-retry-scan>Retry</button>` : ''}
       <button class="btn sm danger" data-del>Delete</button>
     </div>`;
   wireWindow(d, 'v' + v.id);
   $('[data-rescan]', d).onclick = () => { const w = readWindow(d, 'v' + v.id); if (w === null) return; post(`/api/videos/${v.id}/rescan`, { window: w, override: v.status === 'skipped' }).then(render).catch(toastErr); };
+  const rs = $('[data-retry-scan]', d); if (rs) rs.onclick = () => post(`/api/videos/${v.id}/rescan`, { window: readWindow(d, 'v' + v.id) || 'auto' }).then(render).catch(toastErr);
   const rest = $('[data-rest]', d); if (rest) rest.onclick = () => post(`/api/videos/${v.id}/scan_rest`).then((r) => { toast(`${r.queued_chunks} chunks queued`); render(); }).catch(toastErr);
   $('[data-del]', d).onclick = async () => { if (await confirmDlg('Delete this video and all its clips?', 'Delete')) { await del(`/api/videos/${v.id}`); render(); } };
   const momentsBox = $('[data-moments]', d);
@@ -416,21 +446,29 @@ function renderVideo(v, container, c, siblings) {
     const ms = await get(`/api/videos/${v.id}/moments`);
     if (!ms.length) { momentsBox.innerHTML = ''; return; }
     const unrendered = ms.filter((m) => !m.clip).length;
+    const skippedMs = ms.filter((m) => m.flags?.length), shown = ms.filter((m) => !m.flags?.length);
+    S.showSkippedMoments = S.showSkippedMoments || {};
+    const openSk = !!S.showSkippedMoments[v.id];
+    const chipFor = (m) => m.clip
+      ? (m.clip.status === 'rendering'
+        ? `<span class="badge rendering">${esc(m.render_job?.message || 'Making clip…')}</span><button class="btn sm danger" data-cancel="${m.clip.id}">Cancel</button>`
+        : `${badge('clip', m.clip.status, m.clip.error)}${['pending', 'approved'].includes(m.clip.status) ? `<a class="btn sm" href="#/review/${v.id}">Review</a>` : ''}${m.clip.status === 'error' ? `<button class="btn sm yellow" data-retry-clip="${m.clip.id}">Retry</button>` : ''}`)
+      : `<button class="btn sm" data-render="${m.id}">Render</button>`;
+    const rowFor = (m) => `<div class="moment ${m.flags?.length ? 'flagged' : ''}" title="${esc((m.reasons || []).join(' · '))}${m.raw_score != null ? ' · score ' + m.score + (m.raw_score !== m.score ? ' (raw ' + m.raw_score + ')' : '') : ''}">
+          ${m.thumb_url ? `<div class="mthumb" style="background-image:url('${m.thumb_url}')"></div>` : `<div class="mthumb none">${m.ts}</div>`}
+          <span class="t">${m.ts}</span>
+          <div class="grow"><div><b>${m.flags?.length ? esc(flagLabel(m.flags[0])) : esc(momentStrength(m))}</b></div>
+            ${m.chat_words.length ? `<div class="reason">chat was saying: ${m.chat_words.map(esc).join(', ')}</div>` : (m.flags?.length ? '' : `<div class="reason">${esc((m.reasons || [])[0] || '')}</div>`)}</div>
+          ${chipFor(m)}
+          <a class="small" href="${esc(v.url)}${v.platform === 'youtube' ? '&t=' + Math.round(m.t) : '?t=' + Math.round(m.t) + 's'}" target="_blank">open ↗</a></div>`;
     momentsBox.innerHTML = `<div style="margin-top:10px"><div class="row between"><b class="small">Ranked moments</b>
         ${unrendered ? `<button class="btn sm primary" data-next>Render next best</button>` : ''}</div>
-      ${ms.map((m) => `<div class="moment ${m.flags?.length ? 'flagged' : ''}">
-        <div class="mthumb" style="background-image:url('${m.thumb_url || ''}')"></div>
-        <span class="t">${m.ts}</span><span class="score" title="${m.raw_score != null && m.raw_score !== m.score ? 'raw ' + m.raw_score : ''}">${m.score}</span>
-        <div class="grow"><div class="reason">${m.reasons.map(esc).join(' · ')}</div>
-          ${m.chat_words.length ? `<div class="reason">chat: ${m.chat_words.map(esc).join(', ')}</div>` : ''}
-          ${m.flags?.length ? `<div>${m.flags.map((f) => `<span class="badge warn">${f === 'chat_spam' ? 'chat spam' : f === 'low_speech' ? 'low speech' : esc(f)}</span>`).join(' ')}</div>` : ''}</div>
-        ${m.clip ? (m.clip.status === 'rendering'
-            ? `<span class="badge rendering">${esc(m.render_job?.message || 'rendering')}</span><button class="btn sm danger" data-cancel="${m.clip.id}">Cancel</button>`
-            : `<span class="badge ${m.clip.status}">${m.clip.status}</span>${['pending', 'approved'].includes(m.clip.status) ? `<a class="btn sm" href="#/review/${v.id}">Review</a>` : ''}`)
-          : `<button class="btn sm" data-render="${m.id}">Render</button>`}
-        <a class="small" href="${esc(v.url)}${v.platform === 'youtube' ? '&t=' + Math.round(m.t) : '?t=' + Math.round(m.t) + 's'}" target="_blank">open ↗</a></div>`).join('')}
+      ${shown.map(rowFor).join('')}
+      ${skippedMs.length ? `<a class="small" href="#" data-toggle-sk style="display:block;margin-top:6px">${openSk ? 'hide' : 'show'} skipped (${skippedMs.length})</a>${openSk ? skippedMs.map(rowFor).join('') : ''}` : ''}
       <div class="row" style="margin-top:8px"><span class="small muted">Render at a time of your own:</span><input type="text" placeholder="hh:mm:ss" style="width:110px" data-custom-t><button class="btn sm" data-custom>Render</button></div></div>`;
-    $$('[data-render]', momentsBox).forEach((b) => b.onclick = () => post(`/api/moments/${b.dataset.render}/render`).then(() => { toast('Rendering'); loadMoments(); }).catch(toastErr));
+    $$('[data-render]', momentsBox).forEach((b) => b.onclick = () => post(`/api/moments/${b.dataset.render}/render`).then(() => { toast('Making the clip'); loadMoments(); }).catch(toastErr));
+    $$('[data-retry-clip]', momentsBox).forEach((b) => b.onclick = () => post(`/api/clips/${b.dataset.retryClip}/rerender`).then(() => { toast('Retrying'); loadMoments(); }).catch(toastErr));
+    const tsk = $('[data-toggle-sk]', momentsBox); if (tsk) tsk.onclick = (e) => { e.preventDefault(); S.showSkippedMoments[v.id] = !openSk; loadMoments(); };
     $$('[data-cancel]', momentsBox).forEach((b) => b.onclick = () => post(`/api/clips/${b.dataset.cancel}/cancel`).then(() => { toast('Cancelled'); setTimeout(loadMoments, 800); }).catch(toastErr));
     const nx = $('[data-next]', momentsBox); if (nx) nx.onclick = () => post(`/api/videos/${v.id}/render_next`).then(() => { toast('Rendering next best'); loadMoments(); }).catch(toastErr);
     $('[data-custom]', momentsBox).onclick = () => { const t = parseHms($('[data-custom-t]', momentsBox).value); if (t == null) return toast('Enter hh:mm:ss', 'warn'); post(`/api/videos/${v.id}/render_custom`, { t }).then(() => { toast('Rendering'); loadMoments(); }).catch(toastErr); };
@@ -450,17 +488,25 @@ VIEWS.review = async (el, arg) => {
   el.innerHTML = `
     <div class="row between"><div><h1>Review · ${esc(c.name)}</h1><p class="sub">${c.workspace ? 'No campaign rules here: only the 9:16 format check and clean text apply. Captions credit the streamer; edit the template per source.' : "Watch every clip. Trim it to open on something worth watching, fix the hook, tick the checklist, then approve or reject. Clips that fail a campaign rule can't be approved."}</p></div>
       <div class="chips">${[['pending', 'To review'], ['approved', 'Approved'], ['rejected', 'Rejected'], ['posted', 'Posted'], ['rendering,error', 'Rendering / failed'], ['all', 'All']].map(([k, l]) => `<span class="chip ${filter === k ? 'on' : ''}" data-f="${k}">${l}</span>`).join('')}</div></div>
-    <div class="clip-grid" id="clip-grid">${clips.length ? '' : '<div class="empty" style="grid-column:1/-1">Nothing here. Clips appear once a video has been scanned and rendered.</div>'}</div>`;
+    <div class="clip-grid" id="clip-grid">${clips.length ? '' : `<div style="grid-column:1/-1">${({
+      pending: emptyState('No clips waiting. Pick a moment to render', 'Sources', '#/sources'),
+      approved: emptyState('Nothing approved yet. Review a clip and approve it', 'Review', '#/review'),
+      rejected: emptyState('Nothing rejected.', '', ''),
+      posted: emptyState('Nothing posted yet. Approve a clip, then publish it', 'Publish', '#/publish'),
+      'rendering,error': emptyState('Nothing is being made and nothing failed.', '', ''),
+      all: emptyState('No clips yet. Pick a moment to render', 'Sources', '#/sources'),
+    })[filter] || emptyState('No clips yet. Pick a moment to render', 'Sources', '#/sources')}</div>`}</div>`;
   $$('.chip[data-f]').forEach((ch) => ch.onclick = () => { S.reviewFilter = ch.dataset.f; render(); });
   const g = $('#clip-grid');
   for (const cl of clips) {
     const d = document.createElement('div'); d.className = 'clip-card ' + cl.status;
     const fails = (cl.rule_results || []).filter((r) => !r.ok).length;
     d.innerHTML = `<div class="thumb" style="background-image:url('${cl.thumb_url || ''}')">
-        <div class="overlay-tag"><span class="badge ${cl.status}">${cl.status}</span>${fails ? `<span class="badge bad">${fails} rule${fails > 1 ? 's' : ''} fail</span>` : (cl.status === 'pending' ? '<span class="badge ok">rules ok</span>' : '')}</div>
+        <div class="overlay-tag">${badge('clip', cl.status, cl.error)}${fails ? `<span class="badge bad">${fails} rule${fails > 1 ? 's' : ''} fail</span>` : (cl.status === 'pending' ? '<span class="badge ok">rules ok</span>' : '')}</div>
         ${cl.effective_duration ? `<span class="overlay-dur">${fmtTime(cl.effective_duration)}</span>` : ''}
         ${cl.status === 'rendering' ? '<div class="progress" style="position:absolute;left:10px;right:10px;bottom:12px"><i style="width:50%"></i></div>' : ''}</div>
-      <div class="meta"><b>${esc(cl.hook || cl.title || 'Untitled')}</b>${esc((cl.video?.title || '').slice(0, 60))}<br>from ${fmtTime(cl.source_start)} · ${cl.moment ? 'score ' + cl.moment.score : ''}${cl.error ? `<br><span class="bad-text">${esc(cl.error.slice(0, 120))}</span>` : ''}</div>`;
+      <div class="meta"><b>${esc(cl.hook || cl.title || 'Untitled')}</b>${esc((cl.video?.title || '').slice(0, 60))}<br>from ${fmtTime(cl.source_start)}${cl.error ? `<br><span class="bad-text">${esc(reasonOf(cl.error))}</span> <button class="btn sm yellow" data-retry="${cl.id}">Retry</button>` : ''}</div>`;
+    const rb = $('[data-retry]', d); if (rb) rb.onclick = (e) => { e.stopPropagation(); post(`/api/clips/${cl.id}/rerender`).then(() => { toast('Retrying'); render(); }).catch(toastErr); };
     d.onclick = () => { if (cl.status !== 'rendering') openClip(cl.id); };
     g.appendChild(d);
   }
@@ -593,7 +639,7 @@ VIEWS.publish = async (el) => {
     <div class="callout">Scheduled posts fire from this app's own scheduler, so Clip Dashboard has to be running at that time. YouTube (direct) and the posting service schedule on their side and don't need the app.</div>
     ${usable.length ? '' : `<div class="callout pink">No accounts for this campaign's platforms yet. <a href="#/settings/accounts">Add accounts</a> (assisted posting needs no setup).</div>`}
     <h2>Approved clips</h2>
-    <div class="clip-grid" id="pub-grid">${clips.length ? '' : '<div class="empty" style="grid-column:1/-1">Approve clips on the Review page first.</div>'}</div>
+    <div class="clip-grid" id="pub-grid">${clips.length ? '' : `<div style="grid-column:1/-1">${emptyState('No approved clips. Review a clip and approve it', 'Review', '#/review')}</div>`}</div>
     <h2>Queue</h2>
     <div class="panel" id="queue"></div>`;
   const g = $('#pub-grid');
@@ -610,12 +656,12 @@ VIEWS.publish = async (el) => {
 };
 
 function renderQueue(el, posts) {
-  if (!posts.length) { el.innerHTML = '<div class="muted">No posts yet.</div>'; return; }
+  if (!posts.length) { el.innerHTML = '<div class="muted">No posts yet. Pick an approved clip above and click Post / schedule.</div>'; return; }
   el.innerHTML = `<table><tr><th>When</th><th>Clip</th><th>Account</th><th>Status</th><th>Link</th><th></th></tr>${posts.map((p) => `<tr>
     <td class="small">${p.scheduled_at ? fmtDate(p.scheduled_at) : (p.posted_at ? fmtDate(p.posted_at) : fmtDate(p.created_at))}${p.tz ? `<br><span class="muted">${esc(p.tz)}</span>` : ''}</td>
     <td class="small">${esc(p.clip?.hook || p.title || '#' + p.clip_id)}</td>
     <td class="small">${esc(p.account?.label || '')}<br><span class="badge ${p.route}">${p.route}</span>${p.options?.synthetic ? ' <span class="badge pink" title="AI voice intro: synthetic-content disclosure set">AI voice</span>' : ''}</td>
-    <td class="small"><span class="badge ${p.status}">${p.status}</span><br><span class="muted">${esc(p.state_detail || p.error || '')}</span></td>
+    <td class="small">${badge('post', p.status, p.error)}<br><span class="muted">${esc(p.status === 'failed' ? '' : (p.state_detail || ''))}</span></td>
     <td class="small">${p.url ? `<a href="${esc(p.url)}" target="_blank">open ↗</a>` : (p.link_state === 'pending' ? '<span class="warn-text">fetching link…</span>' : (['manual', 'private', 'draft', 'live'].includes(p.status) ? `<div class="row"><input type="text" placeholder="paste post link" data-link="${p.id}" style="width:170px"><button class="btn sm" data-mark="${p.id}">${p.status === 'live' ? 'Save link' : 'Live'}</button></div>` : ''))}</td>
     <td class="small"><div class="row">
       ${p.status === 'manual' ? `<button class="btn sm" data-open="${esc(p.account?.upload_page || '')}">Open upload page</button><button class="btn sm" data-copy="${esc((p.title ? p.title + '\n\n' : '') + p.post_text)}">Copy caption</button><button class="btn sm" data-reveal="${p.clip_id}">Reveal file</button>` : ''}
@@ -729,7 +775,7 @@ PANES.stats = async (el) => {
   const st = await get(`/api/stats${c ? '?campaign_id=' + c.id : ''}`);
   el.innerHTML = `<div class="row between"><div><h2 style="margin-top:0">Stats</h2><p class="sub">Views where the platform API provides them (direct and service routes). Assisted posts show no views. Estimated earnings use the campaign's rate and cap; pool campaigns pay by share of approved views, which the app can't know.</p></div><button class="btn" id="refresh">Refresh views</button></div>
     <div class="stat-tiles">${st.campaigns.map((x) => `<div class="tile teal"><div class="n">${fmtNum(x.views)}</div><div class="l">${esc(x.campaign.name)} views over ${x.posts} live posts</div></div>
-      <div class="tile yellow"><div class="n">${x.campaign.pay_model === 'pool' ? '$' + fmtNum(x.campaign.pool_budget) + ' pool' : '$' + x.earnings.toFixed(2)}</div><div class="l">${x.campaign.pay_model === 'pool' ? `pool · ${x.campaign.min_views ? fmtNum(x.views) + ' / ' + fmtNum(x.campaign.min_views) + ' views needed' : 'split by view share'}` : 'estimated earnings'}</div></div>`).join('') || '<div class="muted">No live posts yet.</div>'}</div>
+      <div class="tile yellow"><div class="n">${x.campaign.pay_model === 'pool' ? '$' + fmtNum(x.campaign.pool_budget) + ' pool' : '$' + x.earnings.toFixed(2)}</div><div class="l">${x.campaign.pay_model === 'pool' ? `pool · ${x.campaign.min_views ? fmtNum(x.views) + ' / ' + fmtNum(x.campaign.min_views) + ' views needed' : 'split by view share'}` : 'estimated earnings'}</div></div>`).join('') || emptyState('No live posts yet. Publish an approved clip', 'Publish', '#/publish')}</div>
     <div class="panel" style="margin-top:14px"><table><tr><th>Post</th><th>Platform</th><th>Views</th><th>Est.</th><th>Checked</th></tr>${st.posts.map((p) => `<tr><td class="small"><a href="${esc(p.url || '#')}" target="_blank">${esc(p.clip?.hook || p.title)}</a></td><td><span class="badge">${p.platform}</span> <span class="badge ${p.route}">${p.route}</span></td><td>${p.views == null ? '<span class="muted">n/a</span>' : fmtNum(p.views)}</td><td>${p.earnings_estimate ? '$' + p.earnings_estimate.toFixed(2) : ''}</td><td class="small muted">${p.views_checked_at ? fmtDate(p.views_checked_at) : ''}</td></tr>`).join('')}</table></div>`;
   $('#refresh').onclick = () => post(`/api/stats/refresh${c ? '?campaign_id=' + c.id : ''}`).then(() => toast('Refreshing in the background')).catch(toastErr);
 };
@@ -738,12 +784,12 @@ PANES.stats = async (el) => {
 PANES.accounts = async (el) => {
   const [accounts, routes] = await Promise.all([get('/api/accounts'), get('/api/routes')]);
   el.innerHTML = `<div class="row between"><div><h2 style="margin-top:0">Accounts</h2><p class="sub">Each account posts through one route. Direct = your own developer app on the platform's official API. Service = an audited third-party posting API. Assisted = you upload, the app does the rest.</p></div><button class="btn primary" id="add-acc">Add account</button></div>
-    <div class="grid cols-2" id="acc-grid">${accounts.length ? '' : '<div class="empty">No accounts. Add one; assisted posting works immediately.</div>'}</div>
+    <div class="grid cols-2" id="acc-grid">${accounts.length ? '' : '<div class="empty">No accounts yet. Assisted posting works immediately. <button class="btn sm primary" id="add-acc-empty" style="margin-left:8px">Add account →</button></div>'}</div>
     <h2>What each route can do</h2><div class="panel"><table><tr><th>Route</th><th>Public posts</th><th>Scheduling</th><th>Notes</th></tr>${Object.values(routes).map((r) => `<tr><td><span class="badge">${r.platform}</span> <span class="badge ${r.route}">${r.route}</span></td><td>${r.public ? '<span class="ok-text">yes</span>' : '<span class="warn-text">private only until audited</span>'}</td><td>${r.native_schedule ? 'on the platform/service' : 'this app (must be running)'}</td><td class="small muted">${esc(r.notes)}</td></tr>`).join('')}</table></div>`;
   const g = $('#acc-grid');
   for (const a of accounts) {
     const d = document.createElement('div'); d.className = 'panel';
-    d.innerHTML = `<div class="row between"><div><b>${esc(a.label)}</b> ${a.handle ? `<span class="muted">${esc(a.handle)}</span>` : ''}</div><div><span class="badge">${a.platform}</span> <span class="badge ${a.route}">${a.route}</span> <span class="badge ${a.status}">${a.status}</span></div></div>
+    d.innerHTML = `<div class="row between"><div><b>${esc(a.label)}</b> ${a.handle ? `<span class="muted">${esc(a.handle)}</span>` : ''}</div><div><span class="badge">${a.platform}</span> <span class="badge ${a.route}">${a.route}</span> ${badge('account', a.status, a.status_detail)}</div></div>
       <div class="small muted" style="margin-top:6px">${esc(a.status_detail || a.route_notes)}</div>
       <div class="row" style="margin-top:10px">${a.route !== 'assisted' ? `<button class="btn sm primary" data-connect>Connect</button><button class="btn sm" data-test>Test</button>` : ''}<button class="btn sm" data-camps>Campaigns: ${a.campaign_ids?.length ? a.campaign_ids.map((id) => esc(S.campaigns.find((c) => c.id === id)?.name || id)).join(', ') : 'all'}</button><span class="grow"></span><button class="btn sm danger" data-del>Remove</button></div>`;
     const cb = $('[data-connect]', d); if (cb) cb.onclick = async () => { try { const r = await post(`/api/accounts/${a.id}/connect`); if (r.auth_url) { window.open(r.auth_url, '_blank'); toast('Approve access in the new tab, then click Test'); } else toast(r.detail || 'Connecting…'); setTimeout(render, 2500); } catch (e) { toastErr(e); } };
@@ -755,6 +801,7 @@ PANES.accounts = async (el) => {
     $('[data-del]', d).onclick = async () => { if (await confirmDlg(`Remove ${a.label}? Its stored token is deleted.`, 'Remove')) { await del(`/api/accounts/${a.id}`); render(); } };
     g.appendChild(d);
   }
+  const ae = $('#add-acc-empty'); if (ae) ae.onclick = () => $('#add-acc').click();
   $('#add-acc').onclick = () => {
     const m = modal(`<div class="modal-head"><h2 style="margin:0">Add account</h2><button class="btn ghost" onclick="closeModal()">✕</button></div>
       <div class="field"><label>Platform</label><select id="a-plat"><option value="youtube">YouTube</option><option value="tiktok">TikTok</option><option value="instagram">Instagram</option><option value="x">X</option></select></div>
