@@ -181,3 +181,8 @@ details summary{cursor:pointer;color:var(--teal);font-weight:600}
 
 .mthumb.none{display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--muted);background:var(--panel2)}
 .moment.flagged{opacity:.75}
+
+/* placeholders: never a black box */
+.clip-card .thumb.none{background:repeating-linear-gradient(135deg,var(--panel2) 0 10px,var(--panel) 10px 20px);align-items:center;justify-content:center}
+.thumb-ph{color:var(--muted);font-size:12px;text-align:center;width:100%}
+.best-thumb.none{display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--muted);background:var(--panel2)}

@@ -1,9 +1,9 @@
-def test_running_jobs_are_requeued_on_start(fresh_db, monkeypatch):
+def test_running_jobs_are_marked_interrupted_on_start(fresh_db, monkeypatch):
     from clipdash import jobs
     monkeypatch.setattr(jobs.threading.Thread, "start", lambda self: None)
     jid = fresh_db.insert("jobs", {"type": "render_clip", "payload": {"clip_id": 1}, "status": "running"})
     jobs.start(1)
-    assert fresh_db.get("jobs", jid)["status"] == "queued"
+    assert fresh_db.get("jobs", jid)["status"] == "error" and fresh_db.get("jobs", jid)["error"] == "Interrupted — retry"
 
 
 def test_job_error_marks_clip_and_video(fresh_db, campaign):

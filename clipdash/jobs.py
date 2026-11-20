@@ -1,5 +1,6 @@
-"""Background jobs: a small SQLite-backed queue with worker threads. Jobs survive restarts
-(anything 'running' at startup goes back to 'queued')."""
+"""Background jobs: a small SQLite-backed queue with worker threads. Queued jobs survive restarts; anything that was
+'running' when the app stopped has no live process any more, so at startup it is marked failed ("Interrupted — retry")
+together with the clip, video or post it was working on. The person retries it from Today or the row itself."""
 from __future__ import annotations
 
 import threading
@@ -147,8 +148,31 @@ def _worker(name: str) -> None:
         tools.set_current_job(None)
 
 
+def mark_interrupted() -> int:
+    """Called at startup: running jobs, and clips/videos/posts left mid-flight with no job behind them, become failed."""
+    from .errors import INTERRUPTED
+    n = 0
+    for job in db.rows("jobs", "status='running'"):
+        db.update("jobs", job["id"], {"status": "error", "error": INTERRUPTED, "message": INTERRUPTED, "finished_at": db.now()})
+        _on_error(job, INTERRUPTED)
+        n += 1
+    active = lambda t, key, val: db.one("jobs", f"type='{t}' AND status='queued' AND payload LIKE ?", (f'%"{key}": {val}%',))
+    for clip in db.rows("clips", "status='rendering'"):
+        if not active("render_clip", "clip_id", clip["id"]):
+            db.update("clips", clip["id"], {"status": "error", "error": INTERRUPTED}); n += 1
+    for v in db.rows("videos", "status IN ('scanning','rendering')"):
+        scan_pending = active("scan_video", "video_id", v["id"])
+        clip_pending = v["status"] == "rendering" and db.one("clips", "video_id=? AND status='rendering'", (v["id"],))
+        if not scan_pending and not clip_pending:
+            db.update("videos", v["id"], {"status": "error", "stage": "Interrupted", "error": INTERRUPTED}); n += 1
+    for post in db.rows("posts", "status='publishing'"):
+        if not active("publish_post", "post_id", post["id"]):
+            db.update("posts", post["id"], {"status": "failed", "error": INTERRUPTED}); n += 1
+    return n
+
+
 def start(n_workers: int = 2) -> None:
-    db.execute("UPDATE jobs SET status='queued', message='Resumed after restart' WHERE status='running'")
+    mark_interrupted()
     for i in range(n_workers):
         t = threading.Thread(target=_worker, args=(f"worker-{i}",), daemon=True, name=f"clipdash-worker-{i}")
         t.start()

@@ -39,12 +39,14 @@ const LABELS = {
   job: { queued: 'Waiting', running: 'Working…', done: 'Done', error: 'Failed', cancelled: 'Cancelled' },
   account: { ready: 'Ready', connected: 'Connected', connecting: 'Connecting…', error: 'Failed', disconnected: 'Not connected' },
 };
+// Rows carry `error_text` (one plain sentence from the server) next to the raw `error`; prefer it.
 const reasonOf = (e) => { const line = String(e || '').trim().split('\n')[0]; return line || 'no reason was recorded — retry'; };
+const errText = (row) => (row && (row.error_text || reasonOf(row.error))) || reasonOf('');
 function label(kind, status, error) {
-  if (['error', 'failed'].includes(status)) return 'Failed: ' + reasonOf(error);
+  if (['error', 'failed'].includes(status)) return 'Failed: ' + (error && typeof error === 'object' ? errText(error) : reasonOf(error));
   return (LABELS[kind] || {})[status] || status;
 }
-const badge = (kind, status, error, extra = '') => `<span class="badge ${status} ${extra}" ${error ? `title="${esc(String(error).slice(0, 500))}"` : ''}>${esc(label(kind, status, error))}</span>`;
+const badge = (kind, status, error, extra = '') => { const raw = error && typeof error === 'object' ? error.error : error; return `<span class="badge ${status} ${extra}" ${raw ? `title="${esc(String(raw).slice(0, 500))}"` : ''}>${esc(label(kind, status, error))}</span>`; };
 // A moment's strength in words; the numbers go in the tooltip.
 function momentStrength(m) {
   const txt = (m.reasons || []).join(' ');
@@ -157,7 +159,7 @@ VIEWS.home = async (el) => {
     <h1>Today</h1><p class="sub">${esc(c.name)} · work through the list top to bottom.</p>
     <div class="steps">
       ${step(1, 'Clips waiting for you', t.review.count,
-        best ? `<div class="row"><div class="best-thumb" style="background-image:url('${best.thumb_url || ''}')"></div><div>Best one: <b>${esc(best.hook || 'untitled')}</b><br><span class="muted small">from ${fmtTime(best.source_start)}</span></div></div>`
+        best ? `<div class="row"><div class="best-thumb ${best.thumb_url ? '' : 'none'}" style="background-image:url('${best.thumb_url || ''}')">${best.thumb_url ? '' : fmtTime(best.source_start)}</div><div>Best one: <b>${esc(best.hook || 'untitled')}</b><br><span class="muted small">from ${fmtTime(best.source_start)}</span></div></div>`
              : 'Nothing to review. Scan a video or pick a moment to render under Sources.',
         t.review.count ? 'Review' : 'Find moments', t.review.count ? '#/review' : '#/sources')}
       ${step(2, 'Approved, not posted', t.publish.count, t.publish.count ? 'Post now or schedule each approved clip.' : 'Everything approved has been posted.', 'Publish', '#/publish')}
@@ -394,7 +396,7 @@ function facecamPicker(s, root, onDone) {
     let tries = 0; const iv = setInterval(async () => {
       tries++; const jobs = await get('/api/jobs?limit=5'); const j = jobs.find((x) => x.type === 'grab_frame' && x.payload.source_id === s.id);
       if (j && j.status === 'done') { clearInterval(iv); img.src = `/media/frame/${s.id}?t=${Date.now()}`; status.textContent = 'Frame ready. Drag a box.'; }
-      else if (j && j.status === 'error') { clearInterval(iv); status.textContent = 'Failed: ' + reasonOf(j.error); }
+      else if (j && j.status === 'error') { clearInterval(iv); status.textContent = 'Failed: ' + errText(j); }
       else if (tries > 60) clearInterval(iv);
     }, 2000);
   };
@@ -426,9 +428,9 @@ function renderVideo(v, container, c, siblings) {
   const busy = ['scanning', 'queued'].includes(v.status);
   d.innerHTML = `
     <div>
-      <div class="row"><b>${esc(v.title || v.url)}</b> ${badge('video', v.status, v.error)} ${v.live ? '<span class="badge live-badge">LIVE</span>' : (v.is_stream ? '<span class="badge">stream VOD</span>' : '')} ${v.platform === 'twitch' ? '<span class="badge">twitch</span>' : ''}</div>
+      <div class="row"><b>${esc(v.title || v.url)}</b> ${badge('video', v.status, v)} ${v.live ? '<span class="badge live-badge">LIVE</span>' : (v.is_stream ? '<span class="badge">stream VOD</span>' : '')} ${v.platform === 'twitch' ? '<span class="badge">twitch</span>' : ''}</div>
       <div class="small muted"><a href="${esc(v.url)}" target="_blank">${esc(v.url)}</a> · ${v.channel ? esc(v.channel) + ' · ' : ''}${v.duration ? fmtTime(v.duration) : ''} ${v.published_at ? '· published ' + fmtDate(v.published_at) : ''}</div>
-      <div class="small" style="margin-top:6px">${v.status === 'error' ? `<span class="bad-text">${esc(reasonOf(v.error))}</span>` : esc(v.stage || '')}</div>
+      <div class="small" style="margin-top:6px">${v.status === 'error' ? `<span class="bad-text">${esc(errText(v))}</span>` : esc(v.stage || '')}</div>
       ${busy ? `<div class="progress" style="margin-top:6px;max-width:420px"><i style="width:${Math.round((v.progress || 0) * 100)}%"></i></div>` : ''}
       <div class="small muted" style="margin-top:6px">${ranges ? 'scanned ' + ranges + ' · ' : ''}${v.moment_count} moments${v.signals.signals_used ? ' from ' + v.signals.signals_used.join(' + ') : ''}${v.signals.chat_messages ? ` · ${fmtNum(v.signals.chat_messages)} chat messages` : ''}${v.signals.chat_error ? ` · <span class="warn-text">chat: ${esc(v.signals.chat_error.slice(0, 120))}</span>` : ''} · clips: ${Object.entries(cc).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'}</div>
       <div class="row" style="margin-top:8px" data-rescan-row><span class="small muted">Scan window:</span>${windowControls('v' + v.id, v.duration > 4 * 3600 ? 'last2h' : 'auto')}<button class="btn sm" data-rescan ${busy ? 'disabled' : ''}>${v.status === 'skipped' ? 'Scan anyway (override date window)' : (v.scanned_ranges?.length ? 'Scan this window' : 'Scan')}</button>
@@ -457,7 +459,7 @@ function renderVideo(v, container, c, siblings) {
     const chipFor = (m) => m.clip
       ? (m.clip.status === 'rendering'
         ? `<span class="badge rendering">${esc(m.render_job?.message || 'Making clip…')}</span><button class="btn sm danger" data-cancel="${m.clip.id}">Cancel</button>`
-        : `${badge('clip', m.clip.status, m.clip.error)}${['pending', 'approved'].includes(m.clip.status) ? `<a class="btn sm" href="#/review/${v.id}">Review</a>` : ''}${m.clip.status === 'error' ? `<button class="btn sm yellow" data-retry-clip="${m.clip.id}">Retry</button>` : ''}`)
+        : `${badge('clip', m.clip.status, m.clip)}${['pending', 'approved'].includes(m.clip.status) ? `<a class="btn sm" href="#/review/${v.id}">Review</a>` : ''}${m.clip.status === 'error' ? `<button class="btn sm yellow" data-retry-clip="${m.clip.id}">Retry</button>` : ''}`)
       : `<button class="btn sm" data-render="${m.id}">Render</button>`;
     const rowFor = (m) => `<div class="moment ${m.flags?.length ? 'flagged' : ''}" title="${esc((m.reasons || []).join(' · '))}${m.raw_score != null ? ' · score ' + m.score + (m.raw_score !== m.score ? ' (raw ' + m.raw_score + ')' : '') : ''}">
           ${m.thumb_url ? `<div class="mthumb" style="background-image:url('${m.thumb_url}')"></div>` : `<div class="mthumb none">${m.ts}</div>`}
@@ -509,11 +511,11 @@ VIEWS.review = async (el, arg) => {
   for (const cl of clips) {
     const d = document.createElement('div'); d.className = 'clip-card ' + cl.status;
     const fails = (cl.rule_results || []).filter((r) => !r.ok).length;
-    d.innerHTML = `<div class="thumb" style="background-image:url('${cl.thumb_url || ''}')">
-        <div class="overlay-tag">${badge('clip', cl.status, cl.error)}${fails ? `<span class="badge bad">${fails} rule${fails > 1 ? 's' : ''} fail</span>` : (cl.status === 'pending' ? '<span class="badge ok">rules ok</span>' : '')}</div>
+    d.innerHTML = `<div class="thumb ${cl.thumb_url ? '' : 'none'}" style="background-image:url('${cl.thumb_url || ''}')">${cl.thumb_url ? '' : `<span class="thumb-ph">${cl.status === 'rendering' ? 'Making clip…' : 'no preview'}<br>from ${fmtTime(cl.source_start)}</span>`}
+        <div class="overlay-tag">${badge('clip', cl.status, cl)}${fails ? `<span class="badge bad">${fails} rule${fails > 1 ? 's' : ''} fail</span>` : (cl.status === 'pending' ? '<span class="badge ok">rules ok</span>' : '')}</div>
         ${cl.effective_duration ? `<span class="overlay-dur">${fmtTime(cl.effective_duration)}</span>` : ''}
         ${cl.status === 'rendering' ? '<div class="progress" style="position:absolute;left:10px;right:10px;bottom:12px"><i style="width:50%"></i></div>' : ''}</div>
-      <div class="meta"><b>${esc(cl.hook || cl.title || 'Untitled')}</b>${esc((cl.video?.title || '').slice(0, 60))}<br>from ${fmtTime(cl.source_start)}${cl.error ? `<br><span class="bad-text">${esc(reasonOf(cl.error))}</span> <button class="btn sm yellow" data-retry="${cl.id}">Retry</button>` : ''}</div>`;
+      <div class="meta"><b>${esc(cl.hook || cl.title || 'Untitled')}</b>${esc((cl.video?.title || '').slice(0, 60))}<br>from ${fmtTime(cl.source_start)}${cl.status === 'error' ? `<br><span class="bad-text">${esc(errText(cl))}</span> <button class="btn sm yellow" data-retry="${cl.id}">Retry</button>` : ''}</div>`;
     const rb = $('[data-retry]', d); if (rb) rb.onclick = (e) => { e.stopPropagation(); post(`/api/clips/${cl.id}/rerender`).then(() => { toast('Retrying'); render(); }).catch(toastErr); };
     d.onclick = () => { if (cl.status !== 'rendering') openClip(cl.id); };
     g.appendChild(d);
@@ -639,7 +641,7 @@ async function openClip(id) {
         <select id="n-engine" style="width:auto"><option value="">Voice: auto (Piper → system)</option><option value="piper" ${n.engine === 'piper' ? 'selected' : ''}>Piper (local)</option><option value="system" ${n.engine === 'system' ? 'selected' : ''}>System voice</option><option value="elevenlabs" ${n.engine === 'elevenlabs' ? 'selected' : ''}>ElevenLabs</option></select>
         <span class="grow"></span>
         ${n.enabled ? `<button class="btn sm" id="n-off">Turn narration off</button><button class="btn sm primary" id="n-on">Re-render intro</button>` : `<button class="btn sm primary" id="n-on">Enable narration & render intro</button>`}</div>
-      ${n.error ? `<div class="small bad-text" style="margin-top:6px">${esc(reasonOf(n.error))}</div>` : ''}
+      ${n.status === 'error' ? `<div class="small bad-text" style="margin-top:6px">${esc(n.error_text || reasonOf(n.error))}</div>` : ''}
       ${n.enabled && n.status === 'ready' ? `<div class="row" style="margin-top:8px"><span class="small muted">Intro ${(n.intro_duration || 0).toFixed(1)} s (${esc(n.engine || '')} voice) · total ${fmtTime(cl.effective_duration)}</span><button class="btn sm" id="n-preview">▶ Preview with intro</button><button class="btn sm ghost" id="n-plain">▶ Original</button></div>` : ''}`;
     $$('#n-alts .chip', m).forEach((ch) => ch.onclick = () => { $('#n-hook', m).value = ch.textContent; });
     $('#n-gen', m).onclick = async () => { const b = $('#n-gen', m); b.disabled = true; b.textContent = 'Generating…'; try { const r = await post(`/api/clips/${cl.id}/narration/hooks`); cl.narration = r.narration; renderNarr(); toast('Hooks ready; pick or edit one'); } catch (e) { toastErr(e); b.disabled = false; b.textContent = 'Generate 3 hooks'; } };
@@ -698,7 +700,7 @@ VIEWS.publish = async (el) => {
   for (const cl of clips) {
     const d = document.createElement('div'); d.className = 'clip-card ' + cl.status;
     const done = cl.posts.filter((p) => !['failed', 'cancelled'].includes(p.status)).map((p) => p.platform);
-    d.innerHTML = `<div class="thumb" style="background-image:url('${cl.thumb_url || ''}')"><div class="overlay-tag">${done.map((p) => `<span class="badge posted">${p}</span>`).join('')}${cl.final_path ? '' : '<span class="badge warn">exporting…</span>'}${(cl.narration || {}).enabled ? '<span class="badge pink">AI voice</span>' : ''}</div><span class="overlay-dur">${fmtTime(cl.effective_duration)}</span></div>
+    d.innerHTML = `<div class="thumb ${cl.thumb_url ? '' : 'none'}" style="background-image:url('${cl.thumb_url || ''}')">${cl.thumb_url ? '' : `<span class="thumb-ph">no preview<br>from ${fmtTime(cl.source_start)}</span>`}<div class="overlay-tag">${done.map((p) => `<span class="badge posted">${p}</span>`).join('')}${cl.final_path ? '' : '<span class="badge warn">exporting…</span>'}${(cl.narration || {}).enabled ? '<span class="badge pink">AI voice</span>' : ''}</div><span class="overlay-dur">${fmtTime(cl.effective_duration)}</span></div>
       <div class="meta"><b>${esc(cl.hook || cl.title)}</b><div class="row" style="margin-top:6px"><button class="btn sm primary" data-post ${usable.length ? '' : 'disabled'}>Post / schedule</button><button class="btn sm" data-view>Preview</button></div></div>`;
     $('[data-post]', d).onclick = () => openPostDialog(cl, usable, c);
     $('[data-view]', d).onclick = () => openClip(cl.id);
@@ -713,7 +715,7 @@ function renderQueue(el, posts) {
     <td class="small">${p.scheduled_at ? fmtDate(p.scheduled_at) : (p.posted_at ? fmtDate(p.posted_at) : fmtDate(p.created_at))}${p.tz ? `<br><span class="muted">${esc(p.tz)}</span>` : ''}</td>
     <td class="small">${esc(p.clip?.hook || p.title || '#' + p.clip_id)}</td>
     <td class="small">${esc(p.account?.label || '')}<br><span class="badge ${p.route}">${p.route}</span>${p.options?.synthetic ? ' <span class="badge pink" title="AI voice intro: synthetic-content disclosure set">AI voice</span>' : ''}</td>
-    <td class="small">${badge('post', p.status, p.error)}<br><span class="muted">${esc(p.status === 'failed' ? '' : (p.state_detail || ''))}</span></td>
+    <td class="small">${badge('post', p.status, p)}${p.status === 'failed' ? `<div class="small" style="margin-top:4px">${p.platform_message && p.platform_message !== p.error_text ? `<span class="muted">${esc(p.platform)} said: </span><span class="mono">${esc(p.platform_message)}</span><br>` : ''}<span class="warn-text">Fix: ${esc(p.fix || '')}</span></div>` : `<br><span class="muted">${esc(p.state_detail || '')}</span>`}</td>
     <td class="small">${p.url ? `<a href="${esc(p.url)}" target="_blank">open ↗</a>` : (p.link_state === 'pending' ? '<span class="warn-text">fetching link…</span>' : (['manual', 'private', 'draft', 'live'].includes(p.status) ? `<div class="row"><input type="text" placeholder="paste post link" data-link="${p.id}" style="width:170px"><button class="btn sm" data-mark="${p.id}">${p.status === 'live' ? 'Save link' : 'Live'}</button></div>` : ''))}</td>
     <td class="small"><div class="row">
       ${p.status === 'manual' ? `<button class="btn sm" data-open="${esc(p.account?.upload_page || '')}">Open upload page</button><button class="btn sm" data-copy="${esc((p.title ? p.title + '\n\n' : '') + p.post_text)}">Copy caption</button><button class="btn sm" data-reveal="${p.clip_id}">Reveal file</button>` : ''}

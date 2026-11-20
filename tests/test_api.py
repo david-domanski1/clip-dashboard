@@ -102,7 +102,7 @@ def test_today_checklist_counts_and_attention(client, fresh_db, campaign):
     assert t["publish"]["count"] == 1
     assert t["sources"][0]["name"] == "LACY" and t["sources"][0]["live"] is True
     kinds = {(a["kind"], a["id"]): a for a in t["attention"]}
-    assert kinds[("clip", broken)]["reason"] == "ToolError: ffmpeg failed:" and kinds[("clip", broken)]["retry"].endswith("/rerender")
+    assert "ffmpeg" in kinds[("clip", broken)]["reason"] and "ToolError" not in kinds[("clip", broken)]["reason"] and kinds[("clip", broken)]["retry"].endswith("/rerender")
     assert kinds[("clip", stuck)]["reason"].startswith("Interrupted")
     assert any(a["kind"] == "video" for a in t["attention"])
     # the live video is scanning with no job behind it, so it is also flagged as interrupted

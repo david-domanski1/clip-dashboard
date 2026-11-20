@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, captions, config, db, disk, hooks, jobs, pipeline, rules, secrets_store, sources, tools, tts
+from . import __version__, captions, config, db, disk, errors, hooks, jobs, pipeline, rules, secrets_store, sources, tools, tts
 from .publish import get_publisher, is_dry_run, oauth_state, route_info, runner
 from .publish import scheduler as sched
 
@@ -122,9 +122,8 @@ def today(campaign_id: int | None = None):
 
 
 def _reason(err) -> str:
-    """One line for the UI; the raw text stays on the row."""
-    line = (str(err or "").strip().splitlines() or ["No reason was recorded"])[0]
-    return line[:200]
+    """One plain sentence for the UI; the raw text stays on the row."""
+    return errors.friendly(err)
 
 
 @app.get("/api/setup/checks")
@@ -201,7 +200,10 @@ def disk_prune():
 
 @app.get("/api/jobs")
 def list_jobs(limit: int = 40):
-    return db.rows("jobs", "1=1", order="id DESC")[:limit]
+    out = db.rows("jobs", "1=1", order="id DESC")[:limit]
+    for j in out:
+        j["error_text"] = errors.friendly(j["error"]) if j["status"] == "error" else None
+    return out
 
 
 @app.post("/api/jobs/{job_id}/cancel")
@@ -428,6 +430,7 @@ def _video_rows(where: str, params: tuple) -> list[dict]:
         v["clip_counts"] = {r["status"]: r["c"] for r in db.execute(
             "SELECT status, COUNT(*) c FROM clips WHERE video_id=? GROUP BY status", (v["id"],)).fetchall()}
         v["moment_count"] = db.execute("SELECT COUNT(*) c FROM moments WHERE video_id=?", (v["id"],)).fetchone()["c"]
+        v["error_text"] = errors.friendly(v.get("error")) if v["status"] == "error" else None
         out.append(v)
     return out
 
@@ -592,6 +595,10 @@ def _clip_full(c: dict) -> dict:
         if (c["source"]["facecam"] or {}).get("none"):
             c["source"]["facecam"] = None
     c["rule_count"] = len(c.get("rule_results") or [])
+    c["error_text"] = errors.friendly(c.get("error")) if c["status"] == "error" else None
+    n = c.get("narration") or {}
+    if n.get("status") == "error":
+        c["narration"] = {**n, "error_text": errors.friendly(n.get("error"))}
     return c
 
 
@@ -952,6 +959,13 @@ def _post_full(p: dict) -> dict:
     p["campaign"] = {k: camp.get(k) for k in ("id", "name", "submission_url", "submit_minutes", "pay_model", "rate_per_1k", "per_clip_cap", "pool_budget", "min_views")} if camp else None
     p["earnings_estimate"] = runner.estimate_earnings(camp, int(p.get("views") or 0)) if camp else 0
     p["link_state"] = runner.link_poll_state(p)          # 'pending' | 'gave_up' | None
+    if p["status"] == "failed":
+        raw = p.get("error") or p.get("state_detail")
+        p["error_text"] = errors.friendly(raw)
+        p["platform_message"] = errors.platform_message(raw)
+        p["fix"] = errors.suggest_fix(p["platform"], p["route"], raw)
+    else:
+        p["error_text"] = p["platform_message"] = p["fix"] = None
     handle = (acct or {}).get("handle") or ""
     p["profile_url"] = _profile_url(p["platform"], handle)
     dl = p.get("submission_deadline")

@@ -653,4 +653,7 @@ def clip_public(clip: dict) -> dict:
     c = dict(clip)
     c["video_url"] = f"/media/clip/{clip['id']}" if clip.get("path") else None
     c["thumb_url"] = f"/media/thumb/{clip['id']}" if clip.get("thumb") else None
+    if clip.get("status") == "error":
+        from .errors import friendly
+        c["error_text"] = friendly(clip.get("error"))
     return c
