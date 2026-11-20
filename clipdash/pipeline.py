@@ -489,6 +489,10 @@ def render_clip(clip_id: int, progress) -> None:
         cut.extract_frame(out, 1.0, thumb, width=540)
     except tools.ToolError:
         thumb = None
+    try:   # caption-free frame for the narrated intro (the clip itself has captions burned in)
+        cut.clean_frame(seg, 0.5, facecam, layout, clean_frame_path(clip_id), cam_fraction=float(settings.get("facecam_fraction", 0.32)))
+    except tools.ToolError:
+        pass
 
     if not db.get("clips", clip_id):
         out.unlink(missing_ok=True)
@@ -508,7 +512,15 @@ def render_clip(clip_id: int, progress) -> None:
         "trim_start": 0.0, "trim_end": trim_end, "status": "pending", "watermark": 0, "ai_text": 0,
         "speech_wpm": round(wpm, 1), "flags": flags, "timings": timings,
     }
+    n = dict(clip.get("narration") or {})
+    if n.get("intro_path") or n.get("preview_path"):
+        # the clip file changed, so the intro (built on its frame) and the preview (intro + old clip) are stale
+        n.update({"intro_path": None, "preview_path": None, "status": "rendering" if n.get("enabled") else None})
+        fields["narration"] = n
     db.update("clips", clip_id, fields)
+    if n.get("enabled"):
+        from . import jobs as _jobs2
+        _jobs2.enqueue("render_intro", {"clip_id": clip_id})
     clip = db.get("clips", clip_id)
     clip["duration"] = trim_end - 0.0
     db.update("clips", clip_id, {"rule_results": rules.validate_clip(clip, campaign, video)})
@@ -528,6 +540,10 @@ def render_clip(clip_id: int, progress) -> None:
     if remaining == 0 and pending_scans == 0:
         _set_video(video["id"], status="done", stage="Clips ready for review", progress=1.0)
     progress(1.0, "Done")
+
+
+def clean_frame_path(clip_id: int) -> Path:
+    return config.FRAMES / f"clip_{clip_id}_clean.jpg"
 
 
 def base_duration(clip: dict) -> float | None:
@@ -588,7 +604,9 @@ def render_intro(clip_id: int, progress) -> None:
     words = narration.word_timings(hook, wav, voice_s, db.get_setting("whisper_model") or "small")
     progress(0.4, f"Rendering intro ({engine} voice, {voice_s:.1f}s)")
     intro = config.CLIPS / f"{src.stem}_intro.mp4"
-    intro_s = narration.render_intro(src, float(clip.get("trim_start") or 0.0), hook, wav, voice_s, intro, work, words)
+    clean = clean_frame_path(clip_id)
+    intro_s = narration.render_intro(src, float(clip.get("trim_start") or 0.0), hook, wav, voice_s, intro, work, words,
+                                     frame_image=clean if clean.exists() else None)
     progress(0.8, "Building preview")
     preview = config.CLIPS / f"{src.stem}_narrated_preview.mp4"
     narration.concat(intro, src, preview)

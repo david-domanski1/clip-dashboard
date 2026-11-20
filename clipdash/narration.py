@@ -9,6 +9,7 @@ first and last spoken word). If Whisper is unavailable the words are spread even
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 from . import cut, tools
@@ -99,11 +100,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def render_intro(clip_path: Path, frame_at: float, hook: str, voice_wav: Path, voice_s: float, out: Path,
-                 work_dir: Path, words: list[tuple[float, float, str]] | None = None) -> float:
-    """Build the intro segment with the same video/audio parameters as the clip so it can be concatenated by copy."""
+                 work_dir: Path, words: list[tuple[float, float, str]] | None = None, frame_image: Path | None = None) -> float:
+    """Build the intro segment with the same video/audio parameters as the clip so it can be concatenated by copy.
+    frame_image: a caption-free frame of the clip's layout (cut.clean_frame); without it the clip's first frame is used."""
     work_dir.mkdir(parents=True, exist_ok=True)
     frame = work_dir / f"{out.stem}_frame.png"
-    cut.extract_frame(clip_path, frame_at, frame)
+    if frame_image and frame_image.exists():
+        shutil.copyfile(frame_image, frame)
+    else:
+        cut.extract_frame(clip_path, frame_at, frame)
     ass = write_intro_ass(hook, work_dir / f"{out.stem}.ass", words)
     dur = intro_duration(voice_s)
     frames = int(dur * 60) + 1

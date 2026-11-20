@@ -166,3 +166,41 @@ def test_player_defaults_to_the_narrated_file(client, fresh_db, campaign, tmp_pa
     fresh_db.update("clips", cid, {"narration": {"enabled": False, "status": "ready", "preview_path": str(prev)}})
     c = client.get(f"/api/clips/{cid}").json()
     assert c["play_url"] == c["video_url"] and c["intro_offset"] == 0
+
+
+def test_clean_frame_and_intro_use_a_caption_free_layout(tmp_path):
+    """The intro is built on a frame rendered from the raw segment without captions (same 9:16 layout as the clip)."""
+    from clipdash import cut, narration, tools
+    seg = tmp_path / "seg.mp4"
+    tools.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=440",
+               "-t", "2", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(seg)], timeout=120)
+    clean = cut.clean_frame(seg, 0.5, None, "full", tmp_path / "clean.jpg")
+    assert tools.media_size(clean) == (1080, 1920)
+    voice = tmp_path / "v.wav"
+    tools.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300", "-t", "1.2", "-ar", "48000", "-ac", "2", str(voice)], timeout=60)
+    words = narration.spread_words(["No", "way."], 0.0, 1.2)
+    d = narration.render_intro(seg, 0.0, "No way.", voice, 1.2, tmp_path / "intro.mp4", tmp_path, words, frame_image=clean)
+    assert 2.9 <= d <= 3.2 and tools.media_size(tmp_path / "intro.mp4") == (1080, 1920)
+
+
+def test_rerendered_clip_rebuilds_its_intro(fresh_db, campaign, monkeypatch, tmp_path):
+    """After a clip is re-rendered the old intro/preview are stale: they are cleared and the intro job is queued again."""
+    from clipdash import cut, pipeline, tools
+    queued = []
+    monkeypatch.setattr("clipdash.jobs.enqueue", lambda t, p=None: queued.append((t, p)) or 1)
+    monkeypatch.setattr("clipdash.jobs.check_cancelled", lambda: None)
+    monkeypatch.setattr(cut, "download_segment", lambda *a, **k: a[4].write_bytes(b"x"))
+    monkeypatch.setattr(cut, "transcribe", lambda *a, **k: [[0.0, 0.5, "hi"]] * 40)
+    monkeypatch.setattr(cut, "write_ass", lambda *a, **k: None)
+    monkeypatch.setattr(cut, "render", lambda seg, out, *a, **k: out.write_bytes(b"y"))
+    monkeypatch.setattr(cut, "extract_frame", lambda *a, **k: None)
+    monkeypatch.setattr(cut, "clean_frame", lambda *a, **k: None)
+    monkeypatch.setattr(tools, "media_duration", lambda p: 90.0)
+    monkeypatch.setattr(tools, "media_size", lambda p: (1080, 1920))
+    vid = fresh_db.insert("videos", {"campaign_id": campaign["id"], "platform": "youtube", "external_id": "rr", "url": "u", "status": "rendering", "duration": 1000})
+    cid = fresh_db.insert("clips", {"video_id": vid, "campaign_id": campaign["id"], "source_start": 0, "source_length": 92, "trim_end": 90, "status": "rendering",
+                                    "narration": {"enabled": True, "status": "ready", "chosen": "No way.", "intro_path": "/old/intro.mp4", "preview_path": "/old/prev.mp4"}})
+    pipeline.render_clip(cid, lambda *a: None)
+    n = fresh_db.get("clips", cid)["narration"]
+    assert n["intro_path"] is None and n["preview_path"] is None and n["status"] == "rendering" and n["chosen"] == "No way."
+    assert ("render_intro", {"clip_id": cid}) in queued

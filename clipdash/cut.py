@@ -259,6 +259,14 @@ def trim(src: Path, out: Path, start: float, end: float) -> Path:
     return out
 
 
+def clean_frame(seg: Path, t: float, facecam: dict | None, layout: str, out: Path, cam_fraction: float = 0.32) -> Path:
+    """One 9:16 frame of the clip's layout WITHOUT captions, taken from the raw segment before it is deleted.
+    The narrated intro is built on this frame, so the clip's own burned-in caption never shows through it."""
+    tools.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(seg), "-frames:v", "1",
+               "-filter_complex", build_filter(facecam, layout, None, cam_fraction=cam_fraction), "-map", "[vout]", "-q:v", "2", str(out)], timeout=600)
+    return out
+
+
 def extract_frame(src: Path, t: float, out: Path, width: int | None = None) -> Path:
     vf = f"scale={width}:-2" if width else "scale=iw:ih"
     tools.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(src),

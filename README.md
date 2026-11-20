@@ -149,7 +149,7 @@ scanned exactly like campaign sources, but:
 A 3–6 second intro before a clip: a synthetic voice reads a one-sentence cliffhanger hook over the clip's first
 frame (slow push-in, darkened 40%) while the hook's words appear one by one in sync with the voice, in the same
 caption style as the clip, then the real clip plays. Voice starts within the first second; the real action starts by
-about second 4. The word timing comes from running the voice file through the same Whisper model as the captions.
+about second 4. The word timing comes from running the voice file through the same Whisper model as the captions. The frame behind the intro is a caption-free render of the clip's first second, saved at render time, so the clip's own captions never show through (clips rendered before this change fall back to their first frame; Re-render to fix).
 When narration is on, the Review player and the Publish preview play the narrated file by default, with a small
 *Original* toggle under the player (opening *Trim* switches to the original, since trimming applies to the clip).
 

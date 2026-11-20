@@ -858,9 +858,11 @@ def rerender_clip(cid: int, body: dict | None = None):
 
 
 def _delete_clip_files(c: dict) -> None:
-    for k in ("path", "final_path", "thumb"):
-        if c.get(k):
-            Path(c[k]).unlink(missing_ok=True)
+    n = c.get("narration") or {}
+    for f in (c.get("path"), c.get("final_path"), c.get("thumb"), n.get("intro_path"), n.get("preview_path"), n.get("audio_path"),
+              str(pipeline.clean_frame_path(c["id"]))):
+        if f:
+            Path(f).unlink(missing_ok=True)
 
 
 @app.delete("/api/clips/{cid}")
