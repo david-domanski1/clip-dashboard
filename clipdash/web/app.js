@@ -25,6 +25,12 @@ const post = (p, body) => api(p, { method: 'POST', body: body || {} });
 const put = (p, body) => api(p, { method: 'PUT', body });
 const del = (p) => api(p, { method: 'DELETE' });
 
+// Page header: campaign name as a small eyebrow, the page title, one short line, and optional guidance behind "?".
+function pageHead(title, sub, { eyebrow = '', right = '', hint = '' } = {}) {
+  return `<div class="page-head"><div>${eyebrow ? `<div class="eyebrow">${esc(eyebrow)}</div>` : ''}<h1>${esc(title)}</h1>${sub ? `<p class="sub">${sub}</p>` : ''}</div>${right ? `<div class="row">${right}</div>` : ''}</div>
+    ${hint ? `<details class="hint"><summary>How this works</summary><div class="hint-body">${hint}</div></details>` : ''}`;
+}
+
 function toast(msg, kind = '') {
   const t = document.createElement('div'); t.className = 'toast ' + kind; t.textContent = msg;
   $('#toasts').appendChild(t); setTimeout(() => t.remove(), kind === 'err' ? 7000 : 3500);
@@ -120,7 +126,7 @@ async function refreshState() {
 // One line like "Making 2 clips · 1 scan running"; the details are in a popover.
 const JOB_WORDS = { render_clip: ['Making', 'clip', 'clips'], finalize_clip: ['Exporting', 'clip', 'clips'], render_intro: ['Voicing', 'intro', 'intros'], scan_video: ['', 'scan running', 'scans running'],
   check_sources: ['Checking', 'channel', 'channels'], publish_post: ['Posting', 'clip', 'clips'], check_post: ['Checking', 'post', 'posts'], refresh_stats: ['Refreshing', 'stats', 'stats'],
-  grab_frame: ['Grabbing', 'frame', 'frames'], install_tdcli: ['Installing', 'tool', 'tools'], download_whisper: ['Downloading', 'model', 'models'], download_piper_voice: ['Downloading', 'voice', 'voices'] };
+  grab_frame: ['Grabbing', 'frame', 'frames'], chat_density: ['Loading', 'chat strip', 'chat strips'], install_tdcli: ['Installing', 'tool', 'tools'], download_whisper: ['Downloading', 'model', 'models'], download_piper_voice: ['Downloading', 'voice', 'voices'] };
 function jobsSummary(running, queued) {
   const counts = {}; running.forEach((j) => { counts[j.type] = (counts[j.type] || 0) + 1; });
   const parts = Object.entries(counts).map(([t, n]) => { const w = JOB_WORDS[t] || ['Running', t.replace(/_/g, ' '), t.replace(/_/g, ' ')]; return `${w[0]} ${n} ${n === 1 ? w[1] : w[2]}`.trim(); });
@@ -171,7 +177,7 @@ VIEWS.home = async (el) => {
     </div>`;
   const best = t.review.best;
   el.innerHTML = `
-    <h1>Today</h1><p class="sub">${esc(c.name)} · work through the list top to bottom.</p>
+    <div class="today-hero"><div><div class="eyebrow">${esc(c.name)}</div><h1>Today</h1><p class="sub" style="margin:4px 0 0">Work through the list top to bottom.</p></div><div class="date">${new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}</div></div>
     <div class="steps">
       ${step(1, 'Clips waiting for you', t.review.count,
         best ? `<div class="row"><div class="best-thumb ${best.thumb_url ? '' : 'none'}" style="background-image:url('${best.thumb_url || ''}')">${best.thumb_url ? '' : fmtTime(best.source_start)}</div><div>Best one: <b>${esc(best.hook || 'untitled')}</b><br><span class="muted small">from ${fmtTime(best.source_start)}</span></div></div>`
@@ -297,16 +303,16 @@ VIEWS.sources = async (el, arg) => {
   const bySource = (id) => vids.filter((v) => v.source_id === id);
   const loose = vids.filter((v) => !v.source_id || !srcs.some((s) => s.id === v.source_id));
   el.innerHTML = `
-    <h1>Sources · ${esc(c.name)}</h1><p class="sub">Channels are watched for new GTA VI videos; a single video URL is scanned once. Open a source to see its videos and the moments found in each.</p>
+    ${pageHead('Sources', 'Channels to watch and videos to clip.', { eyebrow: c.name, hint: `Channels are checked every ${esc(String(S.watchMin || 10))} minutes, live streams included; new videos appear on Today and nothing is searched until you pick a section of it. A single video URL is added once. Open a source to see its videos and the moments found in each. Videos published before the campaign's footage start (${esc((c.source_start || 'not set').slice(0, 10))}) are skipped unless you override.` })}
     ${c.workspace ? `<div class="callout teal"><b>Streamer clips (no campaign).</b> Only creators who publicly allow clipping (a !clipping program, clip-friendly terms). Clips here follow no campaign rules and have no submission tracker; captions credit the streamer by name and handle. A creator who has an active campaign in this app must be clipped inside that campaign.</div>` : ''}
     <div class="panel">
-      <div class="field"><label>Add a YouTube channel (youtube.com/@name), Twitch channel (twitch.tv/name), or a single video URL (a stream still in progress works too)</label>
+      <div class="field"><label>Add a channel or a video (YouTube or Twitch; a stream still in progress works too)</label>
         <div class="row"><input type="text" id="src-url" placeholder="https://www.twitch.tv/lacy  ·  https://www.youtube.com/@IShowSpeed  ·  https://www.twitch.tv/videos/…" style="flex:1;min-width:260px"><button class="btn primary" id="src-add" ${c.workspace ? 'disabled' : ''}>Add</button></div></div>
       ${c.workspace ? `<label class="check"><input type="checkbox" id="src-consent"> This creator publicly allows clipping (e.g. a !clipping program or clip-friendly terms)</label>
         <div class="row" style="margin-top:6px"><input type="text" id="src-terms" placeholder="Link to their clipping terms / program page (optional)" style="flex:1"></div>` : ''}
       <div class="row small muted" style="margin-top:8px">Suggestions:
         ${sugg.map((s) => `${s.youtube ? `<span class="chip" data-url="https://www.youtube.com/${s.youtube}">▶ ${esc(s.name)} (YouTube)</span>` : ''}${s.twitch ? `<span class="chip" data-url="https://www.twitch.tv/${s.twitch}">⌁ ${esc(s.name)} (Twitch)</span>` : ''}`).join('')}</div>
-      <div class="small muted" style="margin-top:8px">Channels are checked every ${esc(String(S.watchMin || 10))} minutes, live streams included; new videos appear on Today. A video is searched only after you pick a section of it. Videos published before the campaign's footage start (${esc((c.source_start || 'not set').slice(0, 10))}) are skipped unless you override.</div>
+
     </div>
     <div id="src-list" style="margin-top:14px">${srcs.length || loose.length ? '' : '<div class="empty">No sources yet. Paste a channel or video URL above, or pick a suggestion.</div>'}</div>
     ${skipped.length ? `<div style="margin-top:10px"><button class="btn sm ghost" id="v-toggle-skipped">${S.showSkipped ? 'Hide' : 'Show'} skipped (${skipped.length})</button>
@@ -598,7 +604,8 @@ VIEWS.review = async (el, arg) => {
   const clips = await get(`/api/clips?campaign_id=${c.id}${filter === 'all' ? '' : '&status=' + filter}${videoArg ? '&video_id=' + videoArg : ''}`);
   S.clipOrder = clips.filter((x) => x.status !== 'rendering').map((x) => x.id);
   el.innerHTML = `
-    <div class="row between"><div><h1>Review · ${esc(c.name)}</h1><p class="sub">${c.workspace ? 'No campaign rules here: only the 9:16 format check and clean text apply. Captions credit the streamer; edit the template per source.' : "Watch every clip. Trim it to open on something worth watching, fix the hook, tick the checklist, then approve or reject. Clips that fail a campaign rule can't be approved."}</p></div>
+    ${pageHead('Review', 'Watch, tick the checklist, approve or reject.', { eyebrow: c.name, hint: c.workspace ? 'No campaign rules here: only the 9:16 format check and clean text apply. Captions credit the streamer; edit the template per source.' : "Watch every clip. Trim it to open on something worth watching, fix the hook, tick the checklist, then approve or reject. Clips that fail a campaign rule can't be approved. Keyboard: space play/pause, A approve, R reject, → next clip." })}
+    <div class="row between" style="margin:-6px 0 14px">
       <div class="chips">${[['pending', 'To review'], ['approved', 'Approved'], ['rejected', 'Rejected'], ['posted', 'Posted'], ['rendering,error', 'Rendering / failed'], ['all', 'All']].map(([k, l]) => `<span class="chip ${filter === k ? 'on' : ''}" data-f="${k}">${l}</span>`).join('')}</div></div>
     <div class="clip-grid" id="clip-grid">${clips.length ? '' : `<div style="grid-column:1/-1">${({
       pending: emptyState('No clips waiting. Pick a moment to render', 'Sources', '#/sources'),
@@ -810,8 +817,7 @@ VIEWS.publish = async (el) => {
   const [clips, posts, accounts] = await Promise.all([get(`/api/clips?campaign_id=${c.id}&status=approved,posted`), get(`/api/posts?campaign_id=${c.id}`), get('/api/accounts')]);
   const usable = accounts.filter((a) => (c.platforms || []).includes(a.platform) && (!a.campaign_ids?.length || a.campaign_ids.includes(c.id)));
   el.innerHTML = `
-    <h1>Publish · ${esc(c.name)}</h1><p class="sub">Pick accounts, then Post now or Schedule. Each clip goes to at most one account per platform.</p>
-    <div class="callout">Scheduled posts fire from this app's own scheduler, so Clip Dashboard has to be running at that time. YouTube (direct) and the posting service schedule on their side and don't need the app.</div>
+    ${pageHead('Publish', 'Post now or schedule, one account per platform.', { eyebrow: c.name, hint: "Scheduled posts fire from this app's own scheduler, so Clip Dashboard has to be running at that time. YouTube (direct) and the posting service schedule on their side and don't need the app. Each clip goes to at most one account per platform; nothing is posted twice." })}
     ${usable.length ? '' : `<div class="callout pink">No accounts for this campaign's platforms yet. <a href="#/settings/accounts">Add accounts</a> (assisted posting needs no setup).</div>`}
     <h2>Approved clips</h2>
     <div class="clip-grid" id="pub-grid">${clips.length ? '' : `<div style="grid-column:1/-1">${emptyState('No approved clips. Review a clip and approve it', 'Review', '#/review')}</div>`}</div>
@@ -901,7 +907,7 @@ VIEWS.submissions = async (el) => {
   if (c.workspace) { el.innerHTML = `<h1>Submissions</h1><p class="sub">The Streamer clips workspace has no campaign, so there is nothing to submit. Pick a campaign in the sidebar.</p>`; return; }
   const order = { active: 0, missed: 1, done: 2 };
   const posts = (await get(`/api/posts?campaign_id=${c.id}&status=live`)).sort((a, b) => order[subState(a)] - order[subState(b)] || (a.submission_deadline || '').localeCompare(b.submission_deadline || ''));
-  el.innerHTML = `<h1>Submissions · ${esc(c.name)}</h1><p class="sub">Every live post must be submitted to the campaign within ${c.submit_minutes} minutes. Copy the link, open the submission page, paste, then tick Submitted. Never edit or delete a submitted post.</p>
+  el.innerHTML = `${pageHead('Submissions', `Submit each live post within ${c.submit_minutes} minutes.`, { eyebrow: c.name, hint: 'Copy the link, open the submission page, paste it there, then tick Submitted. Rows are sorted active → missed → done. Never edit or delete a submitted post; the app warns before anything that would.' })}
     ${c.submission_url ? '' : '<div class="callout pink">This campaign has no submission page URL yet. Add it in the campaign rules.</div>'}
     <div id="subs">${posts.length ? '' : '<div class="empty">No live posts yet. <a class="btn sm primary" href="#/publish" style="margin-left:8px">Publish a clip →</a></div>'}</div>`;
   const box = $('#subs');
@@ -958,7 +964,7 @@ VIEWS.settings = async (el, arg) => {
 PANES.stats = async (el) => {
   const c = campaign();
   const st = await get(`/api/stats${c ? '?campaign_id=' + c.id : ''}`);
-  el.innerHTML = `<div class="row between"><div><h2 style="margin-top:0">Stats</h2><p class="sub">Views where the platform API provides them (direct and service routes). Assisted posts show no views. Estimated earnings use the campaign's rate and cap; pool campaigns pay by share of approved views, which the app can't know.</p></div><button class="btn" id="refresh">Refresh views</button></div>
+  el.innerHTML = `<div class="row between"><div><h2 style="margin-top:0">Stats</h2><p class="sub">Views where the platform API provides them; estimated earnings from the campaign's rate.</p></div><button class="btn" id="refresh">Refresh views</button></div>
     <div class="stat-tiles">${st.campaigns.map((x) => `<div class="tile"><div class="n">${fmtNum(x.views)}</div><div class="l">${esc(x.campaign.name)} views over ${x.posts} live posts</div></div>
       <div class="tile"><div class="n">${x.campaign.pay_model === 'pool' ? '$' + fmtNum(x.campaign.pool_budget) + ' pool' : '$' + x.earnings.toFixed(2)}</div><div class="l">${x.campaign.pay_model === 'pool' ? `pool · ${x.campaign.min_views ? fmtNum(x.views) + ' / ' + fmtNum(x.campaign.min_views) + ' views needed' : 'split by view share'}` : 'estimated earnings'}</div></div>`).join('') || emptyState('No live posts yet. Publish an approved clip', 'Publish', '#/publish')}</div>
     <div class="panel" style="margin-top:14px"><table><tr><th>Post</th><th>Platform</th><th>Views</th><th>Est.</th><th>Checked</th></tr>${st.posts.map((p) => `<tr><td class="small"><a href="${esc(p.url || '#')}" target="_blank">${esc(p.clip?.hook || p.title)}</a></td><td><span class="badge">${p.platform}</span> <span class="badge ${p.route}">${p.route}</span></td><td>${p.views == null ? '<span class="muted">n/a</span>' : fmtNum(p.views)}</td><td>${p.earnings_estimate ? '$' + p.earnings_estimate.toFixed(2) : ''}</td><td class="small muted">${p.views_checked_at ? fmtDate(p.views_checked_at) : ''}</td></tr>`).join('')}</table></div>`;
@@ -968,7 +974,7 @@ PANES.stats = async (el) => {
 // ---------------------------------------------------------------- Accounts
 PANES.accounts = async (el) => {
   const [accounts, routes] = await Promise.all([get('/api/accounts'), get('/api/routes')]);
-  el.innerHTML = `<div class="row between"><div><h2 style="margin-top:0">Accounts</h2><p class="sub">Each account posts through one route. Direct = your own developer app on the platform's official API. Service = an audited third-party posting API. Assisted = you upload, the app does the rest.</p></div><button class="btn primary" id="add-acc">Add account</button></div>
+  el.innerHTML = `<div class="row between"><div><h2 style="margin-top:0">Accounts</h2><p class="sub">One route per account: direct (your own developer app), service (audited posting API) or assisted (you upload).</p></div><button class="btn primary" id="add-acc">Add account</button></div>
     <div class="grid cols-2" id="acc-grid">${accounts.length ? '' : '<div class="empty">No accounts yet. Assisted posting works immediately. <button class="btn sm primary" id="add-acc-empty" style="margin-left:8px">Add account →</button></div>'}</div>
     <h2>What each route can do</h2><div class="panel"><table><tr><th>Route</th><th>Public posts</th><th>Scheduling</th><th>Notes</th></tr>${Object.values(routes).map((r) => `<tr><td><span class="badge">${r.platform}</span> <span class="badge ${r.route}">${r.route}</span></td><td>${r.public ? '<span class="ok-text">yes</span>' : '<span class="warn-text">private only until audited</span>'}</td><td>${r.native_schedule ? 'on the platform/service' : 'this app (must be running)'}</td><td class="small muted">${esc(r.notes)}</td></tr>`).join('')}</table></div>`;
   const g = $('#acc-grid');
@@ -1001,7 +1007,7 @@ PANES.accounts = async (el) => {
 PANES.setup = async (el) => {
   const s = await get('/api/setup/checks');
   const allOk = s.checks.filter((c) => c.name !== 'TwitchDownloaderCLI').every((c) => c.ok);
-  el.innerHTML = `<h2 style="margin-top:0">Setup</h2><p class="sub">First run: check the tools, then connect accounts. Everything downloads into the app's data folder; nothing needs a terminal after install.</p>
+  el.innerHTML = `<h2 style="margin-top:0">Setup</h2><p class="sub">Tools, keys and voices. Everything downloads into the app's data folder.</p>
     <div class="panel"><h3 style="margin-top:0">Dependencies</h3>${s.checks.map((c) => `<div class="rule ${c.ok ? '' : 'bad'}"><span class="dot"></span><b style="min-width:170px">${esc(c.name)}</b><span class="grow">${esc(c.detail)}${c.fix && !c.ok ? `<br><span class="small muted">${esc(c.fix)}</span>` : ''}</span>${c.action ? `<button class="btn sm" data-action="${c.action}">Download</button>` : ''}</div>`).join('')}
       ${S.state?.jobs_running?.length ? `<div class="small muted" style="margin-top:8px">⟳ ${esc(S.state.jobs_running[0].message)}</div>` : ''}</div>
     <div class="grid cols-2" style="margin-top:14px">
@@ -1067,7 +1073,7 @@ PANES.tuning = async (el) => {
     ['audio_spike_db', 'Audio spike (dB above usual = score 1)', 'number'], ['whisper_model', 'Whisper model (tiny / base / small / medium)', 'text'],
     ['facecam_fraction', 'Facecam height as a fraction of the frame', 'number'], ['cache_cap_mb', 'Cache cap (MB)', 'number'], ['watch_interval_min', 'Check sources for new videos and live streams every N minutes (default 10)', 'number'],
   ];
-  el.innerHTML = `<h2 style="margin-top:0">Tuning</h2><p class="sub">Moment detection and rendering. Defaults match the prototype that worked on real footage.</p>
+  el.innerHTML = `<h2 style="margin-top:0">Tuning</h2><p class="sub">Moment detection and rendering defaults.</p>
     <div class="panel"><div class="form-grid">${F.map(([k, l, t]) => `<div class="field"><label>${esc(l)}</label><input type="${t}" step="any" data-k="${k}" value="${esc(s[k] ?? '')}"></div>`).join('')}</div>
       <div class="field"><label>Hype tokens (comma separated; chat messages containing these weigh more)</label><input type="text" data-k="hype_tokens" value="${esc((s.hype_tokens || []).join(', '))}"></div>
       <label class="check"><input type="checkbox" data-k="gta_only" ${s.gta_only ? 'checked' : ''}> Only queue videos whose title looks like GTA VI</label>
@@ -1086,7 +1092,7 @@ PANES.tuning = async (el) => {
   $('#s-prune').onclick = () => post('/api/disk/prune').then((r) => { toast(`Freed ${fmtBytes(r.freed)}`); render(); });
 };
 
-function noCampaign() { return `<h1>No campaign yet</h1><p class="sub">Clips only earn inside a campaign you have joined, so everything starts with one.</p><button class="btn primary" onclick="openCampaignEditor()">Create a campaign</button>`; }
+function noCampaign() { return `<div class="empty" style="max-width:520px;margin:60px auto"><h1 style="font-size:20px">No campaign yet</h1><p class="sub" style="margin:0">Clips only earn inside a campaign you have joined, so everything starts with one.</p><button class="btn primary" onclick="openCampaignEditor()">Create a campaign</button></div>`; }
 window.openCampaignEditor = openCampaignEditor; window.closeModal = closeModal;
 
 boot();
