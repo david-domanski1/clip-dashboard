@@ -826,6 +826,13 @@ def approve_clip(cid: int, body: dict | None = None):
     n = clip.get("narration") or {}
     if n.get("enabled") and n.get("status") != "ready":
         raise HTTPException(409, {"message": "The narrated intro is still rendering (or failed). Wait for it or switch narration off.", "failed": []})
+    try:   # no inflated numbers: the same footage already posted for this campaign cannot be approved again
+        from .features import dupes
+        d = dupes.check_clip(cid)
+    except ImportError:
+        d = {}
+    if d.get("severity") == "blocked":
+        raise HTTPException(409, {"message": d.get("message") or "This footage is already posted for this campaign.", "failed": []})
     failed = [r for r in clip["rule_results"] if not r["ok"]]
     if failed:
         raise HTTPException(409, {"message": "Rule checks fail; fix them before approving.", "failed": failed})

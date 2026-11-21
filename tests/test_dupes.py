@@ -123,3 +123,22 @@ def test_unknown_ids_404(shared):
     cl = shared["client"]
     assert cl.get("/api/dupes/clip/99999").status_code == 404
     assert cl.get("/api/dupes/video/99999").status_code == 404
+
+
+def test_server_refuses_to_approve_a_blocked_duplicate(fresh_db, campaign):
+    """The Review guard is not the only protection: the approve endpoint itself refuses a blocked duplicate."""
+    from fastapi.testclient import TestClient
+    from clipdash.app import app
+    vid = fresh_db.insert("videos", {"campaign_id": campaign["id"], "platform": "twitch", "external_id": "999000111", "url": "u", "status": "done"})
+    base = {"video_id": vid, "campaign_id": campaign["id"], "path": "/nonexistent.mp4", "source_start": 1000, "source_length": 92, "duration": 80.0,
+            "trim_start": 0, "trim_end": 70.0, "width": 1080, "height": 1920, "hook": "LACY loses it.",
+            "post_text": {"youtube": {"title": "LACY loses it", "text": "LACY loses it #LACY"}, "tiktok": {"title": "", "text": "LACY #LACY"},
+                          "instagram": {"title": "", "text": "LACY #LACY"}}, "checklist": {"0": True, "1": True, "2": True, "3": True}}
+    first = fresh_db.insert("clips", {**base, "status": "posted"})
+    acc = fresh_db.insert("accounts", {"platform": "youtube", "route": "assisted", "label": "yt"})
+    fresh_db.insert("posts", {"clip_id": first, "campaign_id": campaign["id"], "account_id": acc, "platform": "youtube", "route": "assisted",
+                              "status": "live", "post_text": "", "posted_at": "2026-11-20T10:00:00+00:00"})
+    second = fresh_db.insert("clips", {**base, "source_start": 1010, "status": "pending"})
+    with TestClient(app) as c:
+        r = c.post(f"/api/clips/{second}/approve", json={"checklist": {"0": True, "1": True, "2": True, "3": True}})
+    assert r.status_code == 409 and "already posted" in r.json()["message"].lower()
