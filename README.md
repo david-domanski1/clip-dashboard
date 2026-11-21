@@ -220,8 +220,9 @@ dashboard, connect your social accounts there, paste the key in Setup, then add 
   private endpoints.
 - A person approves every clip; there is no auto-approve.
 - No inflated numbers: nothing generates views, and a clip goes to at most one account per platform.
-- Real footage only. Captions transcribe what was said. Hooks are sentences from the transcript; there is no
-  model-written text.
+- Real footage only. Captions transcribe what was said, and the default hook is a sentence from the transcript.
+  The one exception is the optional narrated intro: its hook is model-written, off by default, shown to you
+  before anything renders, locked off where a campaign bans AI, and disclosed on YouTube and TikTok.
 - Credentials stay local in `data/secrets.json` (gitignored, user-only permissions). `.env.example` lists them.
 
 ## Where things live
