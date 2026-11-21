@@ -1,9 +1,26 @@
 """Paths and tunable defaults. Everything the app writes lives under DATA (gitignored)."""
 import os
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA = Path(os.environ.get("CLIPDASH_DATA", ROOT / "data")).expanduser()
+
+
+def default_data_dir() -> Path:
+    """data/ next to the source checkout; the per-user app-data folder when running as a packaged (PyInstaller) app,
+    where the install folder is read-only or replaced on update. CLIPDASH_DATA overrides both."""
+    if not getattr(sys, "frozen", False):
+        return ROOT / "data"
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    elif sys.platform.startswith("win"):
+        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return base / "Clip Dashboard"
+
+
+DATA = Path(os.environ.get("CLIPDASH_DATA") or default_data_dir()).expanduser()
 CACHE = DATA / "cache"      # downloaded segments, audio, chat replays (prunable)
 CLIPS = DATA / "clips"      # rendered clips (kept)
 FRAMES = DATA / "frames"    # stills for the facecam picker and thumbnails

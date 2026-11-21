@@ -1,3 +1,4 @@
 -r requirements.txt
 pytest>=8
 httpx>=0.27
+pyinstaller>=6.10   # packaged builds only: scripts/build_mac.sh, scripts/build_win.bat

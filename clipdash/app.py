@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__, captions, config, db, disk, errors, hooks, jobs, pipeline, rules, secrets_store, sources, tools, tts
 from .publish import get_publisher, is_dry_run, oauth_state, route_info, runner
 from .publish import scheduler as sched
+from .features import plan as _plan
 
 from contextlib import asynccontextmanager
 
@@ -274,6 +275,7 @@ def create_campaign(body: dict):
     data = {k: v for k, v in body.items() if k in CAMPAIGN_FIELDS}
     if not data.get("name") or not data.get("creator"):
         _bad("A campaign needs a name and a creator")
+    _plan.require("campaigns")
     data.setdefault("required_names", [data["creator"]])
     data.setdefault("checklist", rules.DEFAULT_CHECKLIST)
     if data.get("bans_ai"):
@@ -791,6 +793,7 @@ def set_narration(cid: int, body: dict):
         n["voice"] = body["voice"] or None
     enabled = bool(body.get("enabled", n.get("enabled", False)))
     if enabled:
+        _plan.require("narration")
         ok, why = rules.narration_allowed(campaign)
         if not ok:
             _bad(why)
@@ -929,6 +932,8 @@ def create_account(body: dict):
     if data.get("platform") not in ("youtube", "tiktok", "instagram", "x"):
         _bad("platform must be youtube, tiktok, instagram or x")
     data.setdefault("route", "assisted")
+    if data["route"] != "assisted":
+        _plan.require("direct_posting")
     data.setdefault("label", f"{data['platform']} ({data['route']})")
     if data["route"] == "assisted":
         data["status"] = "ready"
