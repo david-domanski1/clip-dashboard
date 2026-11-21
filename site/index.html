@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Clip Dashboard</title>
+<meta name="description" content="A desktop app that turns streamers' GTA VI videos into vertical, captioned clips for paid clipping campaigns. You approve every clip; it posts through official routes only.">
+<meta name="theme-color" content="#0a0a0d">
+<link rel="icon" href="../clipdash/web/logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap">
+<style>
+/* Layout: one dark column like the app itself; the timeline heat strip is the hero's signature, screenshots carry the proof.
+   Accents are the app's own and stay rare: teal = primary action, pink = moments, yellow = the selected section and deadlines. */
+:root{
+  color-scheme:dark;
+  --bg:#0a0a0d;--bg-2:#0e0e12;--surface:#121216;--surface-2:#18181e;--surface-3:#1f1f26;
+  --line:rgba(255,255,255,.07);--line-2:rgba(255,255,255,.12);
+  --text:#f2f2f5;--text-2:#c9c9d2;--muted:#8b8b98;--faint:#5e5e6b;
+  --teal:#1fd1d6;--teal-ink:#06262a;--pink:#ff4f9a;--yellow:#ffe066;--yellow-ink:#1a1400;--red:#ff5c5c;--green:#3ddc97;
+  --sans:"Manrope",ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --wrap:1160px;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth;scroll-padding-top:76px}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 var(--sans);letter-spacing:-.005em;font-feature-settings:"cv11";overflow-x:hidden}
+img{max-width:100%;height:auto;display:block}
+a{color:inherit}
+::selection{background:rgba(31,209,214,.3)}
+:focus-visible{outline:2px solid var(--teal);outline-offset:3px;border-radius:6px}
+h1,h2,h3{text-wrap:balance;margin:0;letter-spacing:-.03em}
+p{margin:0}
+.wrap{max-width:var(--wrap);margin:0 auto;padding-left:max(20px,env(safe-area-inset-left,0px));padding-right:max(20px,env(safe-area-inset-right,0px))}
+.eyebrow{font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+.lede{color:var(--text-2);font-size:18px;max-width:60ch}
+.tnum{font-variant-numeric:tabular-nums}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;gap:8px;padding:12px 18px;border-radius:11px;font-weight:700;font-size:15px;text-decoration:none;border:1px solid transparent;transition:transform .15s,background .15s,border-color .15s}
+.btn svg{width:17px;height:17px;flex:none}
+.btn-primary{background:var(--teal);color:var(--teal-ink);box-shadow:0 8px 30px rgba(31,209,214,.18)}
+.btn-primary:hover{background:#4ee0e4}
+.btn-ghost{background:var(--surface-2);color:var(--text);border-color:var(--line-2)}
+.btn-ghost:hover{border-color:rgba(255,255,255,.25)}
+.btn-sm{padding:8px 13px;font-size:14px;border-radius:9px}
+
+/* top bar */
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:31;background:rgba(10,10,13,.92)}
+.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:30;background:rgba(10,10,13,.82);backdrop-filter:saturate(140%) blur(14px);-webkit-backdrop-filter:saturate(140%) blur(14px);border-bottom:1px solid var(--line)}
+.top .wrap{display:flex;align-items:center;gap:24px;height:64px}
+.brand{display:flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;font-size:17px;letter-spacing:-.03em}
+.brand svg{width:32px;height:32px}
+.nav{display:flex;gap:22px;margin-left:auto}
+.nav a{color:var(--muted);text-decoration:none;font-weight:600;font-size:14px}
+.nav a:hover{color:var(--text)}
+
+/* hero */
+.hero{padding-block:72px 40px;position:relative}
+.hero::before{content:"";position:absolute;inset:-64px 0 auto;height:620px;pointer-events:none;
+  background:radial-gradient(600px 300px at 78% 20%,rgba(31,209,214,.08),transparent 70%),radial-gradient(500px 260px at 15% 0%,rgba(255,79,154,.06),transparent 70%)}
+.hero-grid{position:relative;display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:56px;align-items:center}
+.hero-copy{display:flex;flex-direction:column;gap:22px;min-width:0}
+.hero-mark{width:56px;height:56px}
+.hero h1{font-size:clamp(38px,5.4vw,64px);line-height:1.02;font-weight:800;letter-spacing:-.045em}
+.hero h1 em{font-style:normal;color:var(--yellow)}
+.cta{display:flex;flex-wrap:wrap;gap:12px}
+.fine{color:var(--muted);font-size:13px}
+.fine b{color:var(--text-2);font-weight:600}
+
+/* heat strip card */
+.strip{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:18px 18px 14px;box-shadow:0 30px 80px rgba(0,0,0,.5);min-width:0}
+.strip-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.strip-head b{font-size:14px}
+.strip-head span{font-family:var(--mono);font-size:12px;color:var(--yellow)}
+.strip svg{width:100%;height:auto;display:block}
+.strip .b{fill:var(--teal);opacity:.55}
+.strip .b.s{opacity:1}
+.strip .sel{fill:rgba(255,224,102,.07);stroke:var(--yellow);stroke-width:1.5}
+.strip .h{fill:var(--yellow)}
+.strip .tk{stroke:var(--pink);stroke-width:2.5;stroke-linecap:round}
+.strip .tk.old{stroke:var(--faint)}
+.strip .lbl{fill:var(--muted);font:600 11px var(--mono)}
+.moments{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:2px}
+.moments li{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;padding:9px 4px;border-top:1px solid var(--line);font-size:14px}
+.moments .t{font-family:var(--mono);font-size:13px;color:var(--text-2)}
+.moments .n{font-weight:700}
+.moments .n small{color:var(--muted);font-weight:500;margin-left:6px}
+.bar{width:64px;height:5px;border-radius:3px;background:var(--surface-3);overflow:hidden}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--teal),var(--pink))}
+
+.shot{border-radius:16px;border:1px solid var(--line-2);overflow:hidden;background:var(--bg-2);box-shadow:0 40px 100px rgba(0,0,0,.55)}
+.shot-bar{display:flex;gap:7px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--surface)}
+.shot-bar i{width:10px;height:10px;border-radius:50%;background:var(--surface-3)}
+.shot-bar span{margin-left:10px;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.hero-shot{margin-top:64px}
+
+/* sections */
+section{padding-block:96px}
+.sec-head{display:flex;flex-direction:column;gap:14px;margin-bottom:48px;max-width:720px}
+.sec-head h2{font-size:clamp(30px,3.6vw,44px);line-height:1.08;font-weight:800}
+.rule{border-top:1px solid var(--line)}
+
+/* how it works */
+.steps{list-style:none;margin:0;padding:0;display:grid;gap:88px;counter-reset:step}
+.step{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);gap:56px;align-items:center}
+.step:nth-child(even){grid-template-columns:minmax(0,1.5fr) minmax(0,1fr)}
+.step:nth-child(even) .step-copy{order:2}
+.step-copy{display:flex;flex-direction:column;gap:14px;min-width:0}
+.step-num{counter-increment:step;display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50%;background:var(--text);color:var(--bg);font-weight:800;font-size:15px}
+.step-num::before{content:counter(step)}
+.step h3{font-size:26px;line-height:1.15;font-weight:800}
+.step p{color:var(--text-2);max-width:48ch}
+.step ul{margin:4px 0 0;padding:0;list-style:none;display:grid;gap:8px;color:var(--text-2);font-size:15px}
+.step li{display:flex;gap:10px}
+.step li::before{content:"";flex:none;width:6px;height:6px;border-radius:50%;background:var(--teal);margin-top:9px}
+.phone-stage{display:flex;justify-content:center;padding-block:10px;background:radial-gradient(closest-side,rgba(255,224,102,.06),transparent);min-width:0}
+.phone{width:min(300px,100%);padding:36px 11px 20px;border-radius:44px;background:#1b1b21;border:1px solid var(--line-2);box-shadow:0 40px 90px rgba(0,0,0,.6),inset 0 0 0 2px #0b0b0e;position:relative}
+.phone::before{content:"";position:absolute;top:13px;left:50%;transform:translateX(-50%);width:76px;height:14px;border-radius:8px;background:#000}
+.phone img{border-radius:6px 6px 30px 30px;width:100%}
+
+/* features */
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:18px;overflow:hidden}
+.feat{background:var(--bg);padding:26px 24px 28px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.feat svg{width:26px;height:26px;stroke:var(--teal);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;margin-bottom:6px}
+.feat h3{font-size:17px;font-weight:700;letter-spacing:-.02em}
+.feat p{color:var(--muted);font-size:15px;line-height:1.55}
+.soon{margin-top:28px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.soon .eyebrow{margin-right:6px}
+.chip{border:1px dashed var(--line-2);border-radius:999px;padding:6px 13px;font-size:14px;color:var(--text-2);font-weight:600}
+.soon p{flex-basis:100%;color:var(--muted);font-size:14px;margin-top:4px}
+
+/* safety */
+.safe{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:56px;align-items:start}
+.rules{list-style:none;margin:0;padding:0;display:grid;gap:0;border-top:1px solid var(--line)}
+.rules li{display:grid;grid-template-columns:28px 1fr;gap:16px;padding:20px 0;border-bottom:1px solid var(--line)}
+.rules svg{width:22px;height:22px;stroke:var(--green);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;margin-top:2px}
+.rules b{display:block;font-size:17px;margin-bottom:3px}
+.rules span{color:var(--muted);font-size:15px}
+.safe-note{margin-top:22px;padding:16px 18px;border-radius:12px;background:var(--surface);border:1px solid var(--line);color:var(--text-2);font-size:15px}
+.safe-note b{color:var(--green)}
+
+/* pricing */
+.plans{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;max-width:900px}
+.plan{border:1px solid var(--line-2);border-radius:18px;padding:28px;display:flex;flex-direction:column;gap:18px;background:var(--bg-2);min-width:0}
+.plan.pro{background:var(--surface);border-color:rgba(31,209,214,.45);box-shadow:0 0 0 1px rgba(31,209,214,.12),0 30px 80px rgba(0,0,0,.45)}
+.plan h3{font-size:20px;font-weight:800}
+.price{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.price strong{font-size:44px;font-weight:800;letter-spacing:-.04em;line-height:1}
+.price span{color:var(--muted);font-size:15px}
+.plan ul{list-style:none;margin:0;padding:0;display:grid;gap:10px;color:var(--text-2);font-size:15px;flex:1}
+.plan li{display:flex;gap:10px}
+.plan li svg{flex:none;width:18px;height:18px;stroke:var(--teal);fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;margin-top:3px}
+.plan .btn{justify-content:center}
+.team{margin-top:22px;color:var(--muted);font-size:15px}
+.team b{color:var(--text-2)}
+
+/* faq */
+.faq{max-width:820px;border-top:1px solid var(--line)}
+.faq details{border-bottom:1px solid var(--line)}
+.faq summary{cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center;gap:16px;padding:20px 0;font-weight:700;font-size:17px}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"";flex:none;width:10px;height:10px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg) translateY(-3px);transition:transform .2s}
+.faq details[open] summary::after{transform:rotate(225deg) translate(-2px,-2px)}
+.faq details p{color:var(--text-2);padding:0 0 22px;max-width:68ch}
+
+/* closing + footer */
+.closing{text-align:left;display:flex;flex-direction:column;gap:20px;align-items:flex-start}
+.closing h2{font-size:clamp(30px,3.6vw,44px);font-weight:800;line-height:1.08}
+footer{border-top:1px solid var(--line);padding-block:40px 56px;color:var(--muted);font-size:14px}
+footer .wrap{display:flex;flex-direction:column;gap:16px}
+.foot-row{display:flex;flex-wrap:wrap;gap:16px 28px;align-items:center}
+.foot-row a{color:var(--text-2);text-decoration:none}
+.foot-row a:hover{color:var(--text)}
+.legal{max-width:80ch;color:var(--faint);font-size:13px}
+
+@media (max-width:980px){
+  .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .hero-grid,.safe{grid-template-columns:minmax(0,1fr);gap:40px}
+  .step,.step:nth-child(even){grid-template-columns:minmax(0,1fr);gap:28px}
+  .step:nth-child(even) .step-copy{order:0}
+}
+@media (max-width:720px){
+  .nav{display:none}
+  .top .btn{margin-left:auto}
+  .hero{padding-block:44px 24px}
+  .hero-shot{margin-top:40px}
+  section{padding-block:64px}
+  .steps{gap:64px}
+  .plans{grid-template-columns:minmax(0,1fr)}
+  .lede{font-size:17px}
+}
+@media (max-width:540px){
+  .grid{grid-template-columns:minmax(0,1fr)}
+  .cta .btn{flex:1 1 100%;justify-content:center}
+  .shot-bar span{display:none}
+}
+@media (prefers-reduced-motion:no-preference){
+  .strip .tk{animation:tick .5s ease-out both}
+  .strip .tk:nth-of-type(2){animation-delay:.15s}
+  .strip .tk:nth-of-type(3){animation-delay:.3s}
+  @keyframes tick{from{opacity:.2}to{opacity:1}}
+  .btn:hover{transform:translateY(-1px)}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="Clip Dashboard home">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1fd1d6"/><stop offset=".55" stop-color="#ff4f9a"/><stop offset="1" stop-color="#ffe066"/></linearGradient></defs><rect x="6" y="6" width="52" height="52" rx="14" fill="#141418"/><path d="M22 14h14.5l10.5 10.5V44a6 6 0 0 1-6 6H22a6 6 0 0 1-6-6V20a6 6 0 0 1 6-6z" fill="url(#lg)"/><path d="M36.5 14v7.5a3 3 0 0 0 3 3H47" fill="#141418" opacity=".85"/><path d="M28.5 27.5v12l9-6z" fill="#141418"/></svg>
+      clipdash
+    </a>
+    <nav class="nav" aria-label="Sections">
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#safe">Rules</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <a class="btn btn-primary btn-sm" href="https://github.com/david-domanski1/clip-dashboard/releases">Download</a>
+  </div>
+</header>
+
+<main id="top">
+  <div class="hero">
+    <div class="wrap">
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <svg class="hero-mark" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="lg2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1fd1d6"/><stop offset=".55" stop-color="#ff4f9a"/><stop offset="1" stop-color="#ffe066"/></linearGradient></defs><rect x="6" y="6" width="52" height="52" rx="14" fill="#141418"/><path d="M22 14h14.5l10.5 10.5V44a6 6 0 0 1-6 6H22a6 6 0 0 1-6-6V20a6 6 0 0 1 6-6z" fill="url(#lg2)"/><path d="M36.5 14v7.5a3 3 0 0 0 3 3H47" fill="#141418" opacity=".85"/><path d="M28.5 27.5v12l9-6z" fill="#141418"/></svg>
+          <p class="eyebrow">For GTA VI clipping campaigns</p>
+          <h1>Find the moment chat lost it. Post the clip <em>before the deadline.</em></h1>
+          <p class="lede">Clip Dashboard watches the streamers in your campaign, finds their best GTA VI moments, and turns them into vertical, captioned clips you approve and post from your own computer.</p>
+          <div class="cta">
+            <a class="btn btn-primary" href="https://github.com/david-domanski1/clip-dashboard/releases">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>
+              Download for macOS / Windows
+            </a>
+            <a class="btn btn-ghost" href="#how">See how it works</a>
+          </div>
+          <p class="fine">Runs in your browser at <b class="tnum">127.0.0.1</b>. Your accounts, your files, your machine.</p>
+        </div>
+
+        <figure class="strip" style="margin:0" aria-label="Example timeline: a 21-hour stream with a chat activity strip, a two-hour section selected and three moments found inside it">
+          <div class="strip-head">
+            <b>Pick a section</b>
+            <span class="tnum">19:38:15 &ndash; 21:38:15 &middot; 2:00:00</span>
+          </div>
+          <svg viewBox="0 0 640 96" role="img" aria-hidden="true">
+            <rect class="b" x="0.6" y="56.9" width="3.8" height="13.1" rx="1"/>
+            <rect class="b" x="5.6" y="54.7" width="3.8" height="15.3" rx="1"/>
+            <rect class="b" x="10.6" y="52.9" width="3.8" height="17.1" rx="1"/>
+            <rect class="b" x="15.6" y="56.0" width="3.8" height="14.0" rx="1"/>
+            <rect class="b" x="20.6" y="56.6" width="3.8" height="13.4" rx="1"/>
+            <rect class="b" x="25.6" y="58.5" width="3.8" height="11.5" rx="1"/>
+            <rect class="b" x="30.6" y="49.4" width="3.8" height="20.6" rx="1"/>
+            <rect class="b" x="35.6" y="56.9" width="3.8" height="13.1" rx="1"/>
+            <rect class="b" x="40.6" y="45.8" width="3.8" height="24.2" rx="1"/>
+            <rect class="b" x="45.6" y="50.2" width="3.8" height="19.8" rx="1"/>
+            <rect class="b" x="50.6" y="47.9" width="3.8" height="22.1" rx="1"/>
+            <rect class="b" x="55.6" y="48.1" width="3.8" height="21.9" rx="1"/>
+            <rect class="b" x="60.6" y="57.6" width="3.8" height="12.4" rx="1"/>
+            <rect class="b" x="65.6" y="51.3" width="3.8" height="18.7" rx="1"/>
+            <rect class="b" x="70.6" y="54.4" width="3.8" height="15.6" rx="1"/>
+            <rect class="b" x="75.6" y="52.3" width="3.8" height="17.7" rx="1"/>
+            <rect class="b" x="80.6" y="55.7" width="3.8" height="14.3" rx="1"/>
+            <rect class="b" x="85.6" y="58.2" width="3.8" height="11.8" rx="1"/>
+            <rect class="b" x="90.6" y="53.9" width="3.8" height="16.1" rx="1"/>
+            <rect class="b" x="95.6" y="54.9" width="3.8" height="15.1" rx="1"/>
+            <rect class="b" x="100.6" y="56.8" width="3.8" height="13.2" rx="1"/>
+            <rect class="b" x="105.6" y="53.9" width="3.8" height="16.1" rx="1"/>
+            <rect class="b" x="110.6" y="55.8" width="3.8" height="14.2" rx="1"/>
+            <rect class="b" x="115.6" y="53.8" width="3.8" height="16.2" rx="1"/>
+            <rect class="b" x="120.6" y="57.9" width="3.8" height="12.1" rx="1"/>
+            <rect class="b" x="125.6" y="59.1" width="3.8" height="10.9" rx="1"/>
+            <rect class="b" x="130.6" y="54.8" width="3.8" height="15.2" rx="1"/>
+            <rect class="b" x="135.6" y="56.6" width="3.8" height="13.4" rx="1"/>
+            <rect class="b" x="140.6" y="55.4" width="3.8" height="14.6" rx="1"/>
+            <rect class="b" x="145.6" y="54.8" width="3.8" height="15.2" rx="1"/>
+            <rect class="b" x="150.6" y="55.6" width="3.8" height="14.4" rx="1"/>
+            <rect class="b" x="155.6" y="53.4" width="3.8" height="16.6" rx="1"/>
+            <rect class="b" x="160.6" y="54.1" width="3.8" height="15.9" rx="1"/>
+            <rect class="b" x="165.6" y="48.4" width="3.8" height="21.6" rx="1"/>
+            <rect class="b" x="170.6" y="51.1" width="3.8" height="18.9" rx="1"/>
+            <rect class="b" x="175.6" y="51.2" width="3.8" height="18.8" rx="1"/>
+            <rect class="b" x="180.6" y="37.9" width="3.8" height="32.1" rx="1"/>
+            <rect class="b" x="185.6" y="29.1" width="3.8" height="40.9" rx="1"/>
+            <rect class="b" x="190.6" y="15.3" width="3.8" height="54.7" rx="1"/>
+            <rect class="b" x="195.6" y="14.0" width="3.8" height="56.0" rx="1"/>
+            <rect class="b" x="200.6" y="14.0" width="3.8" height="56.0" rx="1"/>
+            <rect class="b" x="205.6" y="14.0" width="3.8" height="56.0" rx="1"/>
+            <rect class="b" x="210.6" y="20.8" width="3.8" height="49.2" rx="1"/>
+            <rect class="b" x="215.6" y="28.7" width="3.8" height="41.3" rx="1"/>
+            <rect class="b" x="220.6" y="46.5" width="3.8" height="23.5" rx="1"/>
+            <rect class="b" x="225.6" y="44.4" width="3.8" height="25.6" rx="1"/>
+            <rect class="b" x="230.6" y="44.6" width="3.8" height="25.4" rx="1"/>
+            <rect class="b" x="235.6" y="54.3" width="3.8" height="15.7" rx="1"/>
+            <rect class="b" x="240.6" y="50.9" width="3.8" height="19.1" rx="1"/>
+            <rect class="b" x="245.6" y="51.9" width="3.8" height="18.1" rx="1"/>
+            <rect class="b" x="250.6" y="57.3" width="3.8" height="12.7" rx="1"/>
+            <rect class="b" x="255.6" y="55.5" width="3.8" height="14.5" rx="1"/>
+            <rect class="b" x="260.6" y="55.9" width="3.8" height="14.1" rx="1"/>
+            <rect class="b" x="265.6" y="57.1" width="3.8" height="12.9" rx="1"/>
+            <rect class="b" x="270.6" y="55.4" width="3.8" height="14.6" rx="1"/>
+            <rect class="b" x="275.6" y="54.2" width="3.8" height="15.8" rx="1"/>
+            <rect class="b" x="280.6" y="55.5" width="3.8" height="14.5" rx="1"/>
+            <rect class="b" x="285.6" y="59.4" width="3.8" height="10.6" rx="1"/>
+            <rect class="b" x="290.6" y="54.7" width="3.8" height="15.3" rx="1"/>
+            <rect class="b" x="295.6" y="54.5" width="3.8" height="15.5" rx="1"/>
+            <rect class="b" x="300.6" y="57.1" width="3.8" height="12.9" rx="1"/>
+            <rect class="b" x="305.6" y="55.6" width="3.8" height="14.4" rx="1"/>
+            <rect class="b" x="310.6" y="59.4" width="3.8" height="10.6" rx="1"/>
+            <rect class="b" x="315.6" y="58.4" width="3.8" height="11.6" rx="1"/>
+            <rect class="b" x="320.6" y="58.5" width="3.8" height="11.5" rx="1"/>
+            <rect class="b" x="325.6" y="58.9" width="3.8" height="11.1" rx="1"/>
+            <rect class="b" x="330.6" y="56.9" width="3.8" height="13.1" rx="1"/>
+            <rect class="b" x="335.6" y="53.9" width="3.8" height="16.1" rx="1"/>
+            <rect class="b" x="340.6" y="54.2" width="3.8" height="15.8" rx="1"/>
+            <rect class="b" x="345.6" y="55.4" width="3.8" height="14.6" rx="1"/>
+            <rect class="b" x="350.6" y="55.5" width="3.8" height="14.5" rx="1"/>
+            <rect class="b" x="355.6" y="44.2" width="3.8" height="25.8" rx="1"/>
+            <rect class="b" x="360.6" y="51.4" width="3.8" height="18.6" rx="1"/>
+            <rect class="b" x="365.6" y="58.2" width="3.8" height="11.8" rx="1"/>
+            <rect class="b" x="370.6" y="54.0" width="3.8" height="16.0" rx="1"/>
+            <rect class="b" x="375.6" y="48.6" width="3.8" height="21.4" rx="1"/>
+            <rect class="b" x="380.6" y="53.2" width="3.8" height="16.8" rx="1"/>
+            <rect class="b" x="385.6" y="52.7" width="3.8" height="17.3" rx="1"/>
+            <rect class="b" x="390.6" y="53.6" width="3.8" height="16.4" rx="1"/>
+            <rect class="b" x="395.6" y="47.8" width="3.8" height="22.2" rx="1"/>
+            <rect class="b" x="400.6" y="46.9" width="3.8" height="23.1" rx="1"/>
+            <rect class="b" x="405.6" y="55.2" width="3.8" height="14.8" rx="1"/>
+            <rect class="b" x="410.6" y="53.5" width="3.8" height="16.5" rx="1"/>
+            <rect class="b" x="415.6" y="51.2" width="3.8" height="18.8" rx="1"/>
+            <rect class="b s" x="420.6" y="55.8" width="3.8" height="14.2" rx="1"/>
+            <rect class="b s" x="425.6" y="44.6" width="3.8" height="25.4" rx="1"/>
+            <rect class="b s" x="430.6" y="33.3" width="3.8" height="36.7" rx="1"/>
+            <rect class="b s" x="435.6" y="14.0" width="3.8" height="56.0" rx="1"/>
+            <rect class="b s" x="440.6" y="14.0" width="3.8" height="56.0" rx="1"/>
+            <rect class="b s" x="445.6" y="20.2" width="3.8" height="49.8" rx="1"/>
+            <rect class="b s" x="450.6" y="39.5" width="3.8" height="30.5" rx="1"/>
+            <rect class="b s" x="455.6" y="49.9" width="3.8" height="20.1" rx="1"/>
+            <rect class="b s" x="460.6" y="55.9" width="3.8" height="14.1" rx="1"/>
+            <rect class="b s" x="465.6" y="52.0" width="3.8" height="18.0" rx="1"/>
+            <rect class="b s" x="470.6" y="51.0" width="3.8" height="19.0" rx="1"/>
+            <rect class="b s" x="475.6" y="37.5" width="3.8" height="32.5" rx="1"/>
+            <rect class="b s" x="480.6" y="14.5" width="3.8" height="55.5" rx="1"/>
+            <rect class="b s" x="485.6" y="14.0" width="3.8" height="56.0" rx="1"/>
+            <rect class="b s" x="490.6" y="14.0" width="3.8" height="56.0" rx="1"/>
+            <rect class="b s" x="495.6" y="27.6" width="3.8" height="42.4" rx="1"/>
+            <rect class="b s" x="500.6" y="41.0" width="3.8" height="29.0" rx="1"/>
+            <rect class="b s" x="505.6" y="29.4" width="3.8" height="40.6" rx="1"/>
+            <rect class="b s" x="510.6" y="19.7" width="3.8" height="50.3" rx="1"/>
+            <rect class="b s" x="515.6" y="14.0" width="3.8" height="56.0" rx="1"/>
+            <rect class="b s" x="520.6" y="14.0" width="3.8" height="56.0" rx="1"/>
+            <rect class="b s" x="525.6" y="14.0" width="3.8" height="56.0" rx="1"/>
+            <rect class="b s" x="530.6" y="18.3" width="3.8" height="51.7" rx="1"/>
+            <rect class="b s" x="535.6" y="32.5" width="3.8" height="37.5" rx="1"/>
+            <rect class="b s" x="540.6" y="49.3" width="3.8" height="20.7" rx="1"/>
+            <rect class="b s" x="545.6" y="40.5" width="3.8" height="29.5" rx="1"/>
+            <rect class="b" x="550.6" y="51.7" width="3.8" height="18.3" rx="1"/>
+            <rect class="b" x="555.6" y="44.0" width="3.8" height="26.0" rx="1"/>
+            <rect class="b" x="560.6" y="52.4" width="3.8" height="17.6" rx="1"/>
+            <rect class="b" x="565.6" y="58.5" width="3.8" height="11.5" rx="1"/>
+            <rect class="b" x="570.6" y="46.8" width="3.8" height="23.2" rx="1"/>
+            <rect class="b" x="575.6" y="49.5" width="3.8" height="20.5" rx="1"/>
+            <rect class="b" x="580.6" y="51.1" width="3.8" height="18.9" rx="1"/>
+            <rect class="b" x="585.6" y="53.8" width="3.8" height="16.2" rx="1"/>
+            <rect class="b" x="590.6" y="56.8" width="3.8" height="13.2" rx="1"/>
+            <rect class="b" x="595.6" y="55.2" width="3.8" height="14.8" rx="1"/>
+            <rect class="b" x="600.6" y="56.5" width="3.8" height="13.5" rx="1"/>
+            <rect class="b" x="605.6" y="53.6" width="3.8" height="16.4" rx="1"/>
+            <rect class="b" x="610.6" y="56.5" width="3.8" height="13.5" rx="1"/>
+            <rect class="b" x="615.6" y="53.6" width="3.8" height="16.4" rx="1"/>
+            <rect class="b" x="620.6" y="53.7" width="3.8" height="16.3" rx="1"/>
+            <rect class="b" x="625.6" y="56.3" width="3.8" height="13.7" rx="1"/>
+            <rect class="b" x="630.6" y="59.7" width="3.8" height="10.3" rx="1"/>
+            <rect class="b" x="635.6" y="58.5" width="3.8" height="11.5" rx="1"/>
+            <rect class="sel" x="420" y="8" width="130" height="66" rx="5"/>
+            <rect class="h" x="415" y="6" width="9" height="70" rx="4.5"/>
+            <rect class="h" x="546" y="6" width="9" height="70" rx="4.5"/>
+            <line class="tk old" x1="202.5" y1="3" x2="202.5" y2="14"/>
+            <line class="tk" x1="442.5" y1="1" x2="442.5" y2="12"/>
+            <line class="tk" x1="487.5" y1="1" x2="487.5" y2="12"/>
+            <line class="tk" x1="522.5" y1="1" x2="522.5" y2="12"/>
+            <text class="lbl" x="0" y="92">0:00</text>
+            <text class="lbl" x="640" y="92" text-anchor="end">21:38:15</text>
+          </svg>
+          <ul class="moments">
+            <li><span class="t tnum">20:04:20</span><span class="n">Chat exploded <small>“no way”, “clip it”</small></span><span class="bar"><i style="width:100%"></i></span></li>
+            <li><span class="t tnum">20:49:30</span><span class="n">Big reaction <small>loudness spike</small></span><span class="bar"><i style="width:62%"></i></span></li>
+            <li><span class="t tnum">21:24:50</span><span class="n">Most replayed <small>YouTube curve</small></span><span class="bar"><i style="width:41%"></i></span></li>
+          </ul>
+        </figure>
+      </div>
+
+      <div class="shot hero-shot">
+        <div class="shot-bar"><i></i><i></i><i></i><span>127.0.0.1:8765 &middot; Today</span></div>
+        <img src="../docs/screenshots/today.png" width="1400" height="900" alt="The Today screen: a checklist of clips waiting for review, approved clips not yet posted, posts not yet submitted with a Missed deadline, streams being watched, new videos found and anything that needs attention.">
+      </div>
+    </div>
+  </div>
+
+  <section id="how" class="rule">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">How it works</p>
+        <h2>From a 20-hour stream to a submitted clip in three steps.</h2>
+        <p class="lede">Clip Dashboard does the searching, cutting and captioning. You make every decision that matters.</p>
+      </div>
+      <ol class="steps">
+        <li class="step">
+          <div class="step-copy">
+            <span class="step-num" aria-hidden="true"></span>
+            <h3>Pick a section of the stream</h3>
+            <p>When a watched channel posts a new VOD or goes live, it shows up on Today. Drag over the part you care about on a timeline lit by chat activity, and Clip Dashboard ranks the moments inside it.</p>
+            <ul>
+              <li>Chat explosions, loudness and YouTube's most-replayed curve</li>
+              <li>Clip length and lead-in set before anything renders</li>
+              <li>Nothing renders until you click Render on a moment</li>
+            </ul>
+          </div>
+          <div class="shot"><img src="../docs/screenshots/section.png" width="1400" height="900" alt="The Pick a section panel: a timeline with a chat heat strip, a two-hour section selected with yellow handles, and a ranked list of moments labelled Chat exploded and Big reaction with scores."></div>
+        </li>
+        <li class="step">
+          <div class="step-copy">
+            <span class="step-num" aria-hidden="true"></span>
+            <h3>Review the clip and approve it</h3>
+            <p>Each clip arrives as 9:16 with the facecam on top, gameplay below and captions burned in. Choose a hook, tick the checklist, and approve once every campaign rule passes.</p>
+            <ul>
+              <li>Required name, hashtag and minimum length checked for you</li>
+              <li>Approve stays disabled and says why until everything passes</li>
+              <li>Keyboard: space, A to approve, R to reject, arrow for next</li>
+            </ul>
+          </div>
+          <div class="shot"><img src="../docs/screenshots/review.png" width="1400" height="900" alt="The Review screen: a vertical clip with captions plays on the left; on the right a hook field with alternatives, a pre-approval checklist, Approve and Reject buttons and a line reading Passes all 11 campaign rules."></div>
+        </li>
+        <li class="step">
+          <div class="step-copy">
+            <span class="step-num" aria-hidden="true"></span>
+            <h3>Post it and submit it in time</h3>
+            <p>Post now or schedule to YouTube, TikTok and Instagram. The moment a post goes live, a 30-minute submission countdown starts. One tap copies the link and opens the campaign's submission page, from your phone if you like.</p>
+            <ul>
+              <li>Missed is shown plainly when a deadline passes</li>
+              <li>Works at phone width while your computer renders</li>
+            </ul>
+          </div>
+          <div class="phone-stage"><div class="phone"><img src="../docs/screenshots/submissions-phone.png" width="420" height="900" alt="The Submissions screen on a phone: two posts marked Missed with Copy link and Copy plus open submission page buttons."></div></div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="features" class="rule">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">Features</p>
+        <h2>Everything between a live stream and a paid view.</h2>
+      </div>
+      <div class="grid">
+        <div class="feat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8"/></svg>
+          <h3>Watches channels</h3>
+          <p>YouTube and Twitch channels, live streams included, checked every few minutes. New videos land on Today.</p>
+        </div>
+        <div class="feat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20V14M7 20V9M11 20v-5M15 20V4M19 20v-8"/></svg>
+          <h3>Finds the moments</h3>
+          <p>Scores chat spikes, loudness, transcript cues and YouTube's most replayed, then labels each one in plain words.</p>
+        </div>
+        <div class="feat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M9.5 15.5h5M10 18h4"/></svg>
+          <h3>Vertical with captions</h3>
+          <p>9:16 renders with the facecam on top, gameplay below and burned-in captions transcribed from what was said.</p>
+        </div>
+        <div class="feat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><path d="m3.5 6 1 1 2-2M3.5 12l1 1 2-2M3.5 18l1 1 2-2"/></svg>
+          <h3>Campaign rules, checked</h3>
+          <p>Paste the campaign page. Rules a machine can check are checked; the rest become a checklist you tick.</p>
+        </div>
+        <div class="feat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h3l2-5 3 10 2-5h6"/></svg>
+          <h3>Narrated hook intro</h3>
+          <p>An optional few-second spoken intro before the clip. Off by default, locked off where a campaign bans AI, and disclosed on every post.</p>
+        </div>
+        <div class="feat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3 10 14"/><path d="m21 3-7 18-4-7-7-4z"/></svg>
+          <h3>Post or schedule</h3>
+          <p>YouTube, TikTok and Instagram through their official APIs, an audited posting service, or assisted upload.</p>
+        </div>
+        <div class="feat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9.5 2.5h5"/></svg>
+          <h3>Submission countdown</h3>
+          <p>A countdown starts when a post goes live. Copy the link and open the submission page in one click.</p>
+        </div>
+        <div class="feat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="5"/><path d="m10 12 1.5 1.5L14.5 10"/></svg>
+          <h3>Learns your taste</h3>
+          <p>Notices which moments you approve and reject for each creator, and ranks new suggestions to match.</p>
+        </div>
+      </div>
+      <div class="soon">
+        <span class="eyebrow">In the works</span>
+        <span class="chip">Earnings by clip, platform and posting hour</span>
+        <span class="chip">Desktop, Discord and phone alerts</span>
+        <span class="chip">Caption styles</span>
+        <span class="chip">Duplicate guard</span>
+        <span class="chip">First-run demo</span>
+        <p>These are being built now and will arrive in updates.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="safe" class="rule">
+    <div class="wrap safe">
+      <div class="sec-head" style="margin-bottom:0">
+        <p class="eyebrow">Rules the app holds to</p>
+        <h2>Built to keep your campaign membership safe.</h2>
+        <p class="lede">Campaigns remove clippers for botted views, reposts and AI slop. Clip Dashboard is built so none of that can happen by accident.</p>
+      </div>
+      <div>
+        <ul class="rules">
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg><div><b>A person approves every clip</b><span>There is no auto-approve. Nothing posts unless you watched it and clicked Approve.</span></div></li>
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg><div><b>Official posting routes only</b><span>Platform APIs, an audited posting service, or you uploading by hand. No browser automation, cookies or private endpoints.</span></div></li>
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg><div><b>One post per clip per platform</b><span>A clip goes to at most one account on each platform. Nothing generates views.</span></div></li>
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg><div><b>Real footage only</b><span>Captions transcribe what was said. No generated video. Narration is optional, off by default and disclosed to the platform.</span></div></li>
+          <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg><div><b>Credentials stay on your machine</b><span>Account keys live in a local file with user-only permissions. There is no Clip Dashboard server.</span></div></li>
+        </ul>
+        <p class="safe-note"><b>Passes all campaign rules</b> is the line you want to see in Review. Until you see it, Approve stays disabled and tells you what is missing.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="pricing" class="rule">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">Pricing</p>
+        <h2>Start free. Upgrade when you clip for more than one campaign.</h2>
+      </div>
+      <div class="plans">
+        <div class="plan">
+          <h3>Free</h3>
+          <div class="price"><strong class="tnum">$0</strong><span>forever</span></div>
+          <ul>
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>One campaign</li>
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>Channel watching, moment finding and captioned 9:16 renders</li>
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>Rule checks and submission countdown</li>
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>Assisted posting: the app copies the caption and opens the upload page</li>
+          </ul>
+          <a class="btn btn-ghost" href="https://github.com/david-domanski1/clip-dashboard/releases">Download free</a>
+        </div>
+        <div class="plan pro">
+          <h3>Pro</h3>
+          <div class="price"><strong class="tnum">$24</strong><span>per month, or $190 per year</span></div>
+          <ul>
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>Unlimited campaigns</li>
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>Direct and service posting, with scheduling</li>
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>Narrated hook intros</li>
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>Earnings analytics</li>
+            <li><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>Priority fixes</li>
+          </ul>
+          <a class="btn btn-primary" href="https://github.com/david-domanski1/clip-dashboard/releases">Get Pro</a>
+        </div>
+      </div>
+      <p class="team"><b>Coming soon:</b> team mode, for clipping crews that share a campaign.</p>
+    </div>
+  </section>
+
+  <section id="faq" class="rule">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">FAQ</p>
+        <h2>Questions clippers ask first.</h2>
+      </div>
+      <div class="faq">
+        <details>
+          <summary>Does it run in the cloud?</summary>
+          <p>No. Clip Dashboard runs on your Mac or Windows PC and opens in your browser at 127.0.0.1. Clips, campaign data and account credentials stay on your computer. Scheduled posts sent through your own computer fire while the app is running.</p>
+        </details>
+        <details>
+          <summary>Will it post automatically?</summary>
+          <p>Never without your approval. Every clip waits in Review until you watch it and click Approve, and Approve stays disabled until every campaign rule passes. After that you choose to post now or schedule.</p>
+        </details>
+        <details>
+          <summary>Which platforms does it post to?</summary>
+          <p>YouTube Shorts, TikTok and Instagram Reels, one account per platform per clip. Each account uses one route: direct (your own developer app on the official API), an audited posting service, or assisted (the app opens the upload page and copies the caption for you). Sources can be YouTube or Twitch.</p>
+        </details>
+        <details>
+          <summary>Does it make AI content?</summary>
+          <p>No generated video, ever. Captions are a transcription of what the streamer actually said. The one optional exception is the narrated hook intro: a short synthetic voice before the real clip. It is off by default, locked off for campaigns that ban AI, and posts that use it are labelled as synthetic on YouTube and TikTok.</p>
+        </details>
+        <details>
+          <summary>Does it download whole streams?</summary>
+          <p>No. It reads the chat replay and audio for the section you pick, then downloads only the roughly 90-second segments around the moments you choose to render.</p>
+        </details>
+        <details>
+          <summary>Can I get a refund?</summary>
+          <p>Yes. Pro comes with a 14-day refund, and you can cancel anytime.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="rule">
+    <div class="wrap closing">
+      <h2>The next big moment is in tonight's stream.</h2>
+      <p class="lede">Install takes about five minutes on macOS or Windows.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/david-domanski1/clip-dashboard/releases">Download for macOS / Windows</a>
+        <a class="btn btn-ghost" href="#pricing">Compare plans</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-row">
+      <a class="brand" href="#top"><svg viewBox="0 0 64 64" aria-hidden="true"><rect x="6" y="6" width="52" height="52" rx="14" fill="#141418"/><path d="M22 14h14.5l10.5 10.5V44a6 6 0 0 1-6 6H22a6 6 0 0 1-6-6V20a6 6 0 0 1 6-6z" fill="url(#lg)"/><path d="M36.5 14v7.5a3 3 0 0 0 3 3H47" fill="#141418" opacity=".85"/><path d="M28.5 27.5v12l9-6z" fill="#141418"/></svg>clipdash</a>
+      <a href="#how">How it works</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/david-domanski1/clip-dashboard/releases">Releases</a>
+    </div>
+    <p class="legal">Clip Dashboard is an independent tool. It is not affiliated with, endorsed by or sponsored by Rockstar Games, Take-Two Interactive, Whop, YouTube, TikTok, Instagram, Twitch or any streamer or campaign shown. Grand Theft Auto VI is a trademark of its owner. Streamer names and footage in the screenshots belong to their creators.</p>
+  </div>
+</footer>
+</body>
+</html>
