@@ -24,3 +24,6 @@ token*.json
 Thumbs.db
 .idea/
 .vscode/
+
+# agent worktrees
+.claude/
