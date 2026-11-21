@@ -476,7 +476,10 @@ def render_clip(clip_id: int, progress) -> None:
     if wpm < float(settings.get("min_words_per_min", 20)):
         flags.append("low_speech")
     ass = d / f"seg_{clip_id}.ass"
-    cut.write_ass(cut.group_captions(words), campaign["creator"], ass, censor=bool(settings.get("censor_captions")))
+    from .features.captions import style_for  # caption style + brand kit (the campaign's, else the default)
+    look = style_for(campaign, settings)
+    cut.write_ass(cut.group_captions(words), campaign["creator"], ass, censor=bool(settings.get("censor_captions")),
+                  style=look["style"], brand=look["brand"], words=words)
 
     progress(0.6, "Rendering 9:16")
     facecam = (source or {}).get("facecam")

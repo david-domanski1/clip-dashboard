@@ -137,13 +137,72 @@ def ass_time(t: float) -> str:
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
+CAPTION_STYLES = ("classic", "pop", "highlight", "boxed")
+# The look of today's captions; a brand kit with exactly these values writes byte-identical ASS to write_ass() without one.
+DEFAULT_BRAND = {"font": "Arial", "size": 78, "colour": "#FFFFFF", "highlight": "#FFE066", "outline": 6,
+                 "position": "lower", "name_badge": True, "uppercase": True}
+# position → (ASS alignment, MarginV). Lower is today's lower-middle; upper sits below the creator's name.
+_POSITIONS = {"lower": (2, 520), "middle": (5, 0), "upper": (8, 300)}
+
+
+def ass_colour(hex_rgb: str, alpha: int = 0) -> str:
+    """'#RRGGBB' → ASS '&HAABBGGRR' (ASS stores blue first; alpha 00 is opaque)."""
+    h = hex_rgb.lstrip("#")
+    return f"&H{alpha:02X}{h[4:6]}{h[2:4]}{h[0:2]}".upper()
+
+
+def _style_words(words: list, lines: list[tuple], style: str) -> list[list]:
+    """Groups that keep each word's timing: [[start, end, word], ...] per caption. Boxed shows 1–2 words at a time.
+    Without word timings the line's words share its duration evenly, so the layout still works."""
+    max_words, max_dur = (2, 1.2) if style == "boxed" else (4, 2.0)
+    if not words:
+        words = []
+        for s, e, text in lines:
+            parts = text.split()
+            step = (e - s) / max(1, len(parts))
+            words += [[s + i * step, s + (i + 1) * step, p] for i, p in enumerate(parts)]
+    groups, cur = [], []
+    for w in words:
+        cur.append(w)
+        if len(cur) >= max_words or (cur[-1][1] - cur[0][0]) >= max_dur:
+            groups.append(cur)
+            cur = []
+    if cur:
+        groups.append(cur)
+    return groups
+
+
 def write_ass(lines: list[tuple], creator: str, out: Path, w: int = 1080, h: int = 1920,
-              censor: bool = False, offset: float = 0.0, name_badge: bool = True) -> Path:
+              censor: bool = False, offset: float = 0.0, name_badge: bool = True,
+              style: str | None = None, brand: dict | None = None, words: list | None = None) -> Path:
     """Big outlined captions in the lower-middle of the frame plus the creator's name near the top.
-    The name badge is plain text (no logo) so it does not count as a watermark."""
+    The name badge is plain text (no logo) so it does not count as a watermark.
+
+    style (classic | pop | highlight | boxed) and brand (DEFAULT_BRAND's keys, already validated) only change how the
+    words look and when they appear, never which words are shown. pop/highlight/boxed use `words` ([start, end, word])
+    for per-word timing. Without style and brand the output is exactly the original classic captions."""
+    style = style if style in CAPTION_STYLES else "classic"
+    b = {**DEFAULT_BRAND, **(brand or {})}
+    if brand is not None:
+        name_badge = bool(b["name_badge"])
+    upper = bool(b["uppercase"])
+
     def esc(s: str) -> str:
         s = cap.censor(s) if censor else s
-        return s.replace("{", "(").replace("}", ")").replace("\\", "/").upper()
+        s = s.replace("{", "(").replace("}", ")").replace("\\", "/")
+        return s.upper() if upper else s
+    align, margin_v = _POSITIONS.get(b["position"], _POSITIONS["lower"])
+    font, size, outline = b["font"], int(b["size"]), int(b["outline"])
+    text_c, hi_c = ass_colour(b["colour"]), ass_colour(b["highlight"])
+    if style == "highlight":
+        # Karaoke: SecondaryColour is a word before it is spoken, PrimaryColour from the moment it is spoken on.
+        cap_style = f"Cap,{font},{size},{hi_c},{text_c},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline},2,{align},60,60,{margin_v},1"
+    elif style == "boxed":
+        # BorderStyle 3: an opaque box behind the text instead of an outline; Outline is the box padding.
+        cap_style = f"Cap,{font},{size},{text_c},{text_c},&H50141414,&H50141414,-1,0,0,0,100,100,0,0,3,{max(8, outline + 8)},0,{align},60,60,{margin_v},1"
+    else:
+        cap_style = f"Cap,{font},{size},{text_c},&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline},2,{align},60,60,{margin_v},1"
+    name_style = f"Name,{font},60,{hi_c},&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,2,0,1,5,2,8,60,60,160,1"
     hdr = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {w}
@@ -152,8 +211,8 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Cap,Arial,78,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6,2,2,60,60,520,1
-Style: Name,Arial,60,&H0066E0FF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,2,0,1,5,2,8,60,60,160,1
+Style: {cap_style}
+Style: {name_style}
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -161,10 +220,37 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     ev = []
     if name_badge and creator:
         ev.append(f"Dialogue: 0,0:00:00.00,9:59:59.00,Name,,0,0,0,,{esc(creator)}")
-    for s, e, text in lines:
-        if e - offset <= 0:
-            continue
-        ev.append(f"Dialogue: 0,{ass_time(s - offset)},{ass_time(e - offset)},Cap,,0,0,0,,{esc(text)}")
+    if style == "classic":
+        for s, e, text in lines:
+            if e - offset <= 0:
+                continue
+            ev.append(f"Dialogue: 0,{ass_time(s - offset)},{ass_time(e - offset)},Cap,,0,0,0,,{esc(text)}")
+    else:
+        for g in _style_words(words or [], lines, style):
+            s, e = float(g[0][0]) - offset, float(g[-1][1]) - offset
+            if e <= 0:
+                continue
+            start = max(0.0, s)
+            t0 = round(start, 2)  # ass_time keeps centiseconds; per-word times are relative to that rounded start
+            if style == "pop":
+                # Each word is invisible until its spoken time, then fades in over 40 ms; hidden words keep their space.
+                parts = []
+                for ws, _we, word in g:
+                    at = max(0, int(round((float(ws) - offset - t0) * 1000)))
+                    parts.append(f"{{\\alpha&HFF&\\t({at},{at + 40},\\alpha&H00&)}}{esc(str(word))}")
+                text = " ".join(parts)
+            elif style == "highlight":
+                # \k durations in centiseconds; a word's span runs to the next word's start so the timing never drifts.
+                parts, pos = [], t0
+                for i, (ws, we, word) in enumerate(g):
+                    nxt = float(g[i + 1][0]) - offset if i + 1 < len(g) else e
+                    end_at = max(pos, nxt)
+                    parts.append(f"{{\\k{max(1, int(round((end_at - pos) * 100)))}}}{esc(str(word))}")
+                    pos = end_at
+                text = " ".join(parts)
+            else:
+                text = " ".join(esc(str(x[2])) for x in g)
+            ev.append(f"Dialogue: 0,{ass_time(start)},{ass_time(e)},Cap,,0,0,0,,{text}")
     out.write_text(hdr + "\n".join(ev) + "\n", encoding="utf-8")
     return out
 
