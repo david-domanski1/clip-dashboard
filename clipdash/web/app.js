@@ -169,7 +169,7 @@ async function boot() {
   drawNavExtras();
   await refreshState();
   await loadCampaigns();
-  if (!S.state.setup_done && !location.hash.includes('setup')) location.hash = '#/settings/setup';
+  if (!S.state.setup_done && !location.hash.includes('setup')) location.hash = '#/welcome';
   await render();
   setInterval(async () => {
     await refreshState();
