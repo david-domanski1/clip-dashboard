@@ -521,6 +521,7 @@ async function renderMoments(v, box, opts = {}) {
   $$('[data-cancel]', box).forEach((b) => b.onclick = () => post(`/api/clips/${b.dataset.cancel}/cancel`).then(() => { toast('Cancelled'); setTimeout(reload, 800); }).catch(toastErr));
   const tsk = $('[data-toggle-sk]', box); if (tsk) tsk.onclick = (e) => { e.preventDefault(); S.showSkippedMoments[v.id] = !openSk; reload(); };
   $('[data-custom]', box).onclick = () => { const t = parseHms($('[data-custom-t]', box).value); if (t == null) return toast('Enter hh:mm:ss', 'warn'); post(`/api/videos/${v.id}/render_custom`, { t, ...renderBody() }).then(() => { toast('Making the clip'); reload(); }).catch(toastErr); };
+  (window.MOMENT_EXTRAS || []).forEach((f) => { try { f(v, ms, box); } catch (e) { console.error(e); } });
 }
 
 // ---------------------------------------------------------------- Pick a section
