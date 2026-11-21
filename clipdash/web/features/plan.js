@@ -1,9 +1,9 @@
 /* Plan (licence) and version/update UI. Backend: clipdash/features/plan.py and clipdash/features/updates.py.
-   Adds Settings → Plan, hides the Stats tab on the free plan, and two Today cards: a limit that was hit in the
+   Adds Settings → Plan, hides the Earnings tab on the free plan, and two Today cards: a limit that was hit in the
    last day (free plan only) and an available update. Uses only the core helpers documented in clipdash/features/__init__.py. */
 'use strict';
 (() => {
-  const PL = { plan: null, updates: null, statsTab: SETTINGS_TABS.find(([k]) => k === 'stats') || ['stats', 'Stats'] };
+  const PL = { plan: null, updates: null, statsTab: SETTINGS_TABS.find(([k]) => k === 'analytics') || ['analytics', 'Earnings'] };
 
   const style = document.createElement('style');
   style.textContent = `
@@ -20,10 +20,10 @@
     .plan-state b{color:var(--text-2);font-weight:600}`;
   document.head.appendChild(style);
 
-  // The Stats tab (views and earnings) is part of Pro; on the free plan it is not shown.
+  // The Earnings tab (views and earnings analytics) is part of Pro; on the free plan it is not shown. Basic Stats stays free.
   function applyGates() {
     const free = PL.plan && PL.plan.plan === 'free';
-    const i = SETTINGS_TABS.findIndex(([k]) => k === 'stats');
+    const i = SETTINGS_TABS.findIndex(([k]) => k === 'analytics');
     if (free && i >= 0) SETTINGS_TABS.splice(i, 1);
     if (!free && i < 0) { const p = SETTINGS_TABS.findIndex(([k]) => k === 'plan'); SETTINGS_TABS.splice(p < 0 ? SETTINGS_TABS.length : p, 0, PL.statsTab); }
   }

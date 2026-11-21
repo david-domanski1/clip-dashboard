@@ -320,8 +320,26 @@ def summary_for(campaign: dict, posts: list[dict], samples: list[dict], days: in
     }
 
 
+def _pro() -> bool:
+    try:
+        from . import plan
+        return bool(plan.limits(plan.current_plan())["analytics"]["ok"])
+    except ImportError:
+        return True
+
+
+def _require_pro() -> None:
+    """Earnings analytics is part of Pro (see docs/monetization.md)."""
+    try:
+        from . import plan
+    except ImportError:
+        return
+    plan.require("analytics")
+
+
 @router.get("/api/analytics/summary")
 def analytics_summary(campaign_id: int | None = None, days: int = 30, tz: str | None = None):
+    _require_pro()
     campaign = (db.get("campaigns", campaign_id) if campaign_id else None) or db.one("campaigns", "active=1 AND kind!='streamer'") or db.ensure_workspace()
     backfill_samples()
     days = max(1, min(int(days or 30), 365))
@@ -335,8 +353,8 @@ def analytics_summary(campaign_id: int | None = None, days: int = 30, tz: str | 
 def analytics_today(campaign_id: int | None = None):
     """The small Today card: views in the last 24 h and the estimate, only meaningful with a live post."""
     campaign = db.get("campaigns", campaign_id) if campaign_id else None
-    if not campaign:
-        return {"live_posts": 0}
+    if not campaign or not _pro():
+        return {"live_posts": 0}       # no card on the free plan
     backfill_samples()
     posts = _live_posts(campaign["id"])
     ids = [p["id"] for p in posts]

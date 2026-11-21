@@ -207,3 +207,16 @@ def test_require_unknown_feature_is_a_programming_error(fresh_db):
 def test_masking():
     assert plan.mask_key("ABCDEFGH-1234") == "ABCD…1234" and plan.mask_key("short") == "short" and plan.mask_key(None) == ""
     assert plan.mask_email("jane.doe@example.com") == "j…@example.com" and plan.mask_email("nope") == ""
+
+
+def test_free_plan_gates_earnings_analytics(fresh_db, campaign, monkeypatch):
+    from fastapi.testclient import TestClient
+    from clipdash.app import app
+    monkeypatch.setenv("CLIPDASH_PLAN", "free")
+    with TestClient(app) as c:
+        r = c.get(f"/api/analytics/summary?campaign_id={campaign['id']}")
+        assert r.status_code == 402 and r.json()["feature"] == "analytics"
+        assert c.get(f"/api/analytics/today?campaign_id={campaign['id']}").json() == {"live_posts": 0}
+    monkeypatch.setenv("CLIPDASH_PLAN", "pro")
+    with TestClient(app) as c:
+        assert c.get(f"/api/analytics/summary?campaign_id={campaign['id']}").status_code == 200
