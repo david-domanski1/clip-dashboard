@@ -214,6 +214,20 @@ dashboard, connect your social accounts there, paste the key in Setup, then add 
 *Service*. Other services (Post Bridge, Blotato, Upload-Post) have similar APIs; the adapter lives in
 `clipdash/publish/service.py`.
 
+## Plans and licence
+
+- **Free:** one campaign (the *Streamer clips* workspace does not count), assisted posting, every rule check and the
+  30-minute countdown. **Pro** (USD 24/month or 190/year) adds unlimited campaigns, direct and posting-service routes,
+  narrated intros and the Stats (earnings) tab. A blocked action says what to do; nothing you already made is locked.
+- Activate in **Settings → Plan** with the key from the purchase email. It is checked online about once a day and keeps
+  working offline for 14 days. **Deactivate** there before moving to another computer. Only the key is sent to the
+  licence server; `data/license.json` stays local (mode 0600).
+- Development: a key starting `DEV-` activates Pro locally without network (source checkouts only), and
+  `CLIPDASH_PLAN=pro` forces Pro (the test suite sets it).
+- The same tab shows the version and checks GitHub releases for updates (at most every 12 hours).
+- Pricing, gating rationale and what is needed before selling: [docs/monetization.md](docs/monetization.md). Building
+  the Mac/Windows app: [packaging/README.md](packaging/README.md).
+
 ## Rules the app holds to
 
 - Official routes only: platform APIs or an audited posting service. No browser automation, cookies or
