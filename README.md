@@ -71,12 +71,14 @@ A terminal window opens, then your browser at `http://127.0.0.1:8765`. Keep the 
 app. Scheduled posts (except YouTube direct and the posting service, which schedule on their side) only fire
 while it runs. Close the window to stop.
 
-First launch opens **Settings → Setup**:
+First launch opens a short **welcome** flow: it checks the tools (click *Download* next to the Whisper caption model,
+once, ~500 MB), offers a **practice campaign** built on the public GTA VI trailer so you can find a moment, render a
+clip and open Review within a few minutes, then explains Review. *Skip* on any step goes straight to Today. Delete the
+practice campaign when you are done; nothing from it should be posted. Settings → Setup holds the same checks later:
 
 ![Setup](docs/screenshots/setup.png)
 
-- The dependency list should be green. Click *Download* next to the Whisper caption model (once, ~500 MB).
-  TwitchDownloaderCLI is only needed for Twitch chat replays; download it when you add a Twitch source.
+- TwitchDownloaderCLI is only needed for Twitch chat replays; download it when you add a Twitch source.
 - Credentials are optional at this point: assisted posting works without any.
 
 ## Make your first clip (about 10 minutes)
@@ -218,7 +220,7 @@ dashboard, connect your social accounts there, paste the key in Setup, then add 
 
 - **Free:** one campaign (the *Streamer clips* workspace does not count), assisted posting, every rule check and the
   30-minute countdown. **Pro** (USD 24/month or 190/year) adds unlimited campaigns, direct and posting-service routes,
-  narrated intros and the Stats (earnings) tab. A blocked action says what to do; nothing you already made is locked.
+  narrated intros and the Earnings tab (basic Stats stays free). A blocked action says what to do; nothing you already made is locked.
 - Activate in **Settings → Plan** with the key from the purchase email. It is checked online about once a day and keeps
   working offline for 14 days. **Deactivate** there before moving to another computer. Only the key is sent to the
   licence server; `data/license.json` stays local (mode 0600).
@@ -227,6 +229,25 @@ dashboard, connect your social accounts there, paste the key in Setup, then add 
 - The same tab shows the version and checks GitHub releases for updates (at most every 12 hours).
 - Pricing, gating rationale and what is needed before selling: [docs/monetization.md](docs/monetization.md). Building
   the Mac/Windows app: [packaging/README.md](packaging/README.md).
+
+## More in Settings
+
+- **Earnings** – views over time, estimated earnings (pool campaigns show an upper bound, clearly labelled), results by
+  platform and by posting hour, and which moment strengths, clip lengths and narration earn most. Pro.
+- **Campaigns** – every joined campaign with dates, pay, submitted/missed counts and a watch on the campaign page: when
+  its rules change you get a diff and a red flag on Today. Nothing is changed for you; you re-import.
+- **Notifications** – desktop, Discord webhook and phone push (the free ntfy app) for new videos, finished clips,
+  failures and submission deadlines (10 minutes before, and when missed).
+- **Captions** – four looks (classic, pop, highlight, boxed) and a brand kit per campaign (font, size, colours,
+  position) with live previews. Styles change the look, never the words.
+- **Your taste** – after 8 or more approve/reject decisions per creator, moments like the ones you approve rank higher
+  and every adjustment says why. Nothing is ever approved for you.
+- **Health** – installed vs latest yt-dlp, a plain verdict when downloads fail in a way that means it needs updating,
+  a one-click update, and a self-test.
+
+In Review, a banner warns when a moment was already clipped (another campaign or account), and footage already posted
+for the same campaign cannot be approved again. Press **?** in Review for keyboard shortcuts (seek, loop the trim,
+tick checklist items, set trim points), compare the three hooks in context, and change playback speed.
 
 ## Rules the app holds to
 
