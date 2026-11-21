@@ -27,3 +27,7 @@ Thumbs.db
 
 # agent worktrees
 .claude/
+
+# packaged builds (scripts/build_mac.sh, scripts/build_win.bat)
+build/
+dist/

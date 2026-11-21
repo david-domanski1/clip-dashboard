@@ -27,9 +27,11 @@ store needs. See docs/monetization.md.
 Offline grace: a pro licence stays pro for GRACE_DAYS after last_validated_at even without network, then falls back to
 free until a validation succeeds. GET /api/plan re-validates quietly once a day when the machine is online.
 
+Override: the environment variable CLIPDASH_PLAN=pro (or free) forces the plan without any licence; the test suite sets
+it so existing tests can create several campaigns, and tests/test_plan.py removes it to exercise the free plan.
+
 Developer / dry-run path: a key starting with "DEV-" activates locally as pro with no network call. It is meant for
-development and demos and is documented in the README; a shipped build should set the setting license_dev_keys to 0
-to switch it off.
+development and demos; the setting license_dev_keys defaults to off in a packaged (frozen) build.
 
 Other modules gate behaviour with require("campaigns" | "direct_posting" | "narration" | "analytics"), which raises
 HTTPException(402, {"message", "feature", "upgrade_url"}) on the free plan when the limit is reached."""
@@ -40,6 +42,7 @@ import math
 import os
 import socket
 import stat
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -75,11 +78,14 @@ UPGRADE_MESSAGES = {
     "analytics": "Views and earnings analytics are part of Pro. Upgrade in Settings → Plan to see them.",
 }
 
+# Source checkouts accept DEV- keys; a packaged (PyInstaller) build does not unless the setting is switched on.
+DEV_KEYS_DEFAULT = not getattr(sys, "frozen", False)
+
 config.register_settings({
     "license_store_id": "",          # Lemon Squeezy store id; blank = accept any store (development)
     "license_product_id": "",        # Lemon Squeezy product id; blank = accept any product
     "license_checkout_url": "https://clipdash.lemonsqueezy.com/checkout",
-    "license_dev_keys": True,        # DEV-… keys activate locally as pro; set False in a shipped build
+    "license_dev_keys": DEV_KEYS_DEFAULT,   # DEV-… keys activate locally as pro; off by default in a packaged build
 })
 
 # The most recent "limit hit", kept in memory so Today can show an upgrade card for a day.
@@ -149,7 +155,7 @@ def mask_email(email: str | None) -> str:
 
 
 def is_dev_key(key: str | None) -> bool:
-    return bool(key) and str(key).upper().startswith("DEV-") and bool(db.get_setting("license_dev_keys", True))
+    return bool(key) and str(key).upper().startswith("DEV-") and bool(db.get_setting("license_dev_keys", DEV_KEYS_DEFAULT))
 
 
 # ------------------------------------------------------------------ plan state
@@ -168,7 +174,16 @@ def grace_days_left(lic: dict | None = None) -> int | None:
     return max(0, math.ceil(left.total_seconds() / 86400))
 
 
+def plan_override() -> str | None:
+    """CLIPDASH_PLAN=pro|free forces a plan (the test suite and local development set it; a shipped build never does)."""
+    v = os.environ.get("CLIPDASH_PLAN", "").strip().lower()
+    return v if v in PLANS else None
+
+
 def current_plan() -> str:
+    forced = plan_override()
+    if forced:
+        return forced
     lic = read_license()
     if not lic or lic.get("plan") != "pro":
         return "free"

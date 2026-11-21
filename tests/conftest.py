@@ -7,6 +7,7 @@ _tmp = tempfile.mkdtemp(prefix="clipdash-test-")
 os.environ["CLIPDASH_DATA"] = _tmp
 os.environ["CLIPDASH_DRY_RUN"] = "1"
 os.environ["CLIPDASH_NO_WORKERS"] = "1"
+os.environ.setdefault("CLIPDASH_PLAN", "pro")   # plan gates off; tests/test_plan.py removes it to test the free plan
 
 
 @pytest.fixture()

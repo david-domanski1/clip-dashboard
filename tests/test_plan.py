@@ -21,6 +21,7 @@ class FakeResponse:
 
 @pytest.fixture()
 def client(fresh_db, monkeypatch):
+    monkeypatch.delenv("CLIPDASH_PLAN", raising=False)
     plan.write_license(None)
     plan.last_402.update({"at": None, "feature": None, "message": None})
     monkeypatch.setattr(plan.requests, "post", lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected network call")))
@@ -49,12 +50,28 @@ def test_free_plan_counts_campaigns_without_the_workspace(client, fresh_db):
 def test_second_campaign_is_a_402_with_a_plain_message(client, fresh_db, campaign):
     r = client.post("/api/campaigns", json={"name": "B", "creator": "B"})
     assert r.status_code == 402
-    body = r.json()["detail"]
+    body = r.json()
     assert body["feature"] == "campaigns" and body["message"] == plan.UPGRADE_MESSAGES["campaigns"]
     assert "Settings → Plan" in body["message"] and "upgrade_url" in body
     hit = client.get("/api/plan").json()["limit_hit"]
     assert hit and hit["feature"] == "campaigns" and hit["message"] == body["message"]
     assert fresh_db.execute("SELECT COUNT(*) c FROM campaigns WHERE kind IS NULL OR kind != 'streamer'").fetchone()["c"] == 1
+
+
+@pytest.fixture(autouse=True)
+def _no_plan_override(monkeypatch):
+    monkeypatch.delenv("CLIPDASH_PLAN", raising=False)
+
+
+def test_plan_override_env(fresh_db, monkeypatch):
+    plan.write_license(None)
+    monkeypatch.setenv("CLIPDASH_PLAN", "pro")
+    assert plan.current_plan() == "pro"
+    plan.require("narration")                       # no exception
+    monkeypatch.setenv("CLIPDASH_PLAN", "free")
+    assert plan.current_plan() == "free"
+    monkeypatch.setenv("CLIPDASH_PLAN", "bogus")
+    assert plan.current_plan() == "free"            # ignored: falls back to the (absent) licence
 
 
 def test_limit_hit_card_expires_after_a_day():
@@ -67,11 +84,11 @@ def test_limit_hit_card_expires_after_a_day():
 def test_direct_posting_and_narration_are_pro(client, fresh_db):
     assert client.post("/api/accounts", json={"platform": "youtube", "route": "assisted"}).status_code == 200
     r = client.post("/api/accounts", json={"platform": "youtube", "route": "direct"})
-    assert r.status_code == 402 and r.json()["detail"]["feature"] == "direct_posting"
+    assert r.status_code == 402 and r.json()["feature"] == "direct_posting"
     ws = fresh_db.ensure_workspace()
     cid = _clip(ws["id"])
     r = client.put(f"/api/clips/{cid}/narration", json={"enabled": True})
-    assert r.status_code == 402 and r.json()["detail"]["feature"] == "narration"
+    assert r.status_code == 402 and r.json()["feature"] == "narration"
     assert client.put(f"/api/clips/{cid}/narration", json={"enabled": False, "hook": "LACY loses it."}).status_code == 200
 
 
@@ -95,7 +112,7 @@ def test_dev_keys_can_be_switched_off(client, fresh_db, monkeypatch):
     fresh_db.set_setting("license_dev_keys", False)
     monkeypatch.setattr(plan.requests, "post", lambda *a, **k: FakeResponse({"activated": False, "error": "license_key not found"}, 404))
     r = client.post("/api/plan/activate", json={"key": "DEV-nope"})
-    assert r.status_code == 400 and "not recognised" in r.json()["detail"]["message"]
+    assert r.status_code == 400 and "not recognised" in r.json()["message"]
 
 
 def test_store_activation_checks_product_and_masks_email(client, fresh_db, monkeypatch):
@@ -115,7 +132,7 @@ def test_store_activation_checks_product_and_masks_email(client, fresh_db, monke
     fresh_db.set_setting("license_store_id", "111")
     fresh_db.set_setting("license_product_id", "999")
     r = client.post("/api/plan/activate", json={"key": "ABCD1234-KEY"})
-    assert r.status_code == 400 and "different product" in r.json()["detail"]["message"]
+    assert r.status_code == 400 and "different product" in r.json()["message"]
     assert [c[0] for c in calls] == ["activate", "deactivate"] and calls[1][1]["instance_id"] == "inst-uuid"
     assert client.get("/api/plan").json()["plan"] == "free"
 
@@ -131,10 +148,10 @@ def test_store_activation_checks_product_and_masks_email(client, fresh_db, monke
 def test_activation_errors_are_plain(client, fresh_db, monkeypatch):
     monkeypatch.setattr(plan.requests, "post", lambda *a, **k: FakeResponse({"activated": False, "error": "This license key has reached the activation limit."}, 400))
     r = client.post("/api/plan/activate", json={"key": "FULL-KEY"})
-    assert r.status_code == 400 and "already in use" in r.json()["detail"]["message"]
+    assert r.status_code == 400 and "already in use" in r.json()["message"]
     monkeypatch.setattr(plan.requests, "post", lambda *a, **k: (_ for _ in ()).throw(requests.ConnectionError("down")))
     r = client.post("/api/plan/activate", json={"key": "SOME-KEY"})
-    assert r.status_code == 503 and "connection" in r.json()["detail"]["message"].lower()
+    assert r.status_code == 503 and "connection" in r.json()["message"].lower()
     assert client.post("/api/plan/activate", json={"key": "  "}).status_code == 400
 
 
